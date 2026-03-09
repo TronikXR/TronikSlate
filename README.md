@@ -8,6 +8,22 @@ AI-powered short film generation pipeline for [Wan2GP](https://github.com/deepbe
 
 ## Installation
 
+### Via Pinokio (Easiest)
+
+[Pinokio](https://pinokio.computer/) gives you a 1-click install with automatic dependency management.
+
+1. Open Pinokio
+2. Click **Discover** → search for **"TronikSlate"** (or paste the GitHub URL)
+3. Click **Install** — Pinokio clones the repo and runs `npm ci` automatically
+4. Once installed, click **Start** → the app launches and you'll see **"Open Web UI"**
+
+> If installing manually into Pinokio, clone into your Pinokio `api/` folder:
+> ```bash
+> cd /path/to/pinokio/api
+> git clone https://github.com/TronikXR/TronikSlate.git
+> ```
+> Then open Pinokio and click **Install** on the TronikSlate card.
+
 ### Standalone Web App (Full Features)
 
 The full Tronik Slate app is a React + TypeScript web app with an Express backend. Requires [Node.js](https://nodejs.org/) 18+.
@@ -22,9 +38,9 @@ This starts both the Vite dev server (frontend) and the Express API server (back
 
 > **Typical Pinokio path:** `F:\pinokio\api\wan.git\app`
 
-### Gradio Plugin Only (Inside Wan2GP)
+### Smooth Brain Gradio Plugin (Separate Project)
 
-If you just want the 4-step wizard tab inside Wan2GP without the standalone app:
+If you just want the 4-step wizard as a tab inside Wan2GP's Gradio UI (without the full TronikSlate app), use the **separate** [Smooth Brain plugin](https://github.com/TronikXR/smoothbrain):
 
 **Via Wan2GP Plugin Manager (Recommended):**
 1. Open Wan2GP → **Settings → Plugins**
@@ -42,7 +58,7 @@ git clone https://github.com/TronikXR/smoothbrain.git smooth_brain
 ```
 > The folder must be named `smooth_brain` (with underscore) inside `app/plugins/`.
 
-![Wan2GP Plugin Manager — paste the GitHub URL and click Download and Install](docs/plugin_manager_install.png)
+> **Note:** The Smooth Brain plugin is a lightweight version of TronikSlate's wizard that runs directly inside Wan2GP. TronikSlate is the full standalone app with additional features (timeline, shot editor, skills, export panel, etc.).
 
 ---
 

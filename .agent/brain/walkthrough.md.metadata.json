@@ -1,0 +1,5 @@
+{
+  "artifactType":  "ARTIFACT_TYPE_WALKTHROUGH",
+  "summary":  "Walkthrough for 2026-03-09 session: fixed base_model_type leak in LoRA shots, fixed LTX 2.3 model classification collision, added model selector to shot params, restored Pinokio launcher files.",
+  "updatedAt":  "2026-03-09T20:36:23.756910700Z"
+}

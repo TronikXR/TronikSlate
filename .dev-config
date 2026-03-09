@@ -1,0 +1,12 @@
+# TronikSlate Dev Config (gitignored)
+# This file is for local development reference only.
+
+## GitHub Remote
+- Repo: https://github.com/hoodtronik/TronikSlate.git
+- User: hoodtronik
+- Auth: Cached via Git Credential Manager (browser-based login)
+- Push: After every commit, run `git push`
+
+## Workflow
+- Commit + push on every change batch
+- Branch: master
