@@ -16,7 +16,8 @@ from .state import (
 )
 from .ollama import refine_single_prompt
 from .model_scanner import (
-    get_image_model_overrides, scan_profiles, get_image_ref_overrides
+    get_image_model_overrides, scan_profiles, get_image_ref_overrides,
+    QUALITY_PRESETS,
 )
 
 log = logging.getLogger("smooth_brain")
@@ -361,17 +362,25 @@ class RenderEngineMixin:
         resolution = sb_state.get("resolution", "480p")
         n_panels = len(self.sb_video_panels)
 
-        # Auto-select fastest speed profile for this video model
+        # Quality preset: fast (Lightning LoRA), balanced (25 steps), high (40 steps)
+        quality_preset = sb_state.get("quality_preset", "fast")
+        preset_cfg = QUALITY_PRESETS.get(quality_preset, QUALITY_PRESETS["fast"])
         profile_params = {}
-        try:
-            profile = self._get_fastest_profile(video_model)
-            if profile:
-                profile_params = profile.get("params", {})
-                log.info("Auto-selected speed profile: %s", profile['name'])
-            else:
-                log.info("No speed profiles found for %s, using defaults", video_model)
-        except Exception as e:
-            log.error("Profile scan failed: %s", e, exc_info=True)
+        if preset_cfg["use_profile"]:
+            # Fast: use Lightning LoRA accelerator profile
+            try:
+                profile = self._get_fastest_profile(video_model)
+                if profile:
+                    profile_params = profile.get("params", {})
+                    log.info("Quality=%s → speed profile: %s", quality_preset, profile['name'])
+                else:
+                    log.info("Quality=%s → no profiles found for %s, using defaults", quality_preset, video_model)
+            except Exception as e:
+                log.error("Profile scan failed: %s", e, exc_info=True)
+        else:
+            # Balanced / High: fixed steps, no accelerator LoRA
+            profile_params = {"num_inference_steps": preset_cfg["num_inference_steps"]}
+            log.info("Quality=%s → %d steps, no accelerator", quality_preset, preset_cfg["num_inference_steps"])
 
         # Video status constants (reuse image ones)
         V_PENDING = STATUS_PENDING

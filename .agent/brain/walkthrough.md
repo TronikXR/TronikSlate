@@ -1,40 +1,54 @@
-# Session Walkthrough — 2026-03-09
+# Quality Preset Feature — Walkthrough
 
-## Changes Made
+## What Changed
 
-### 1. Fix: LoRA shots using wrong model (`base_model_type` bug)
-**File**: `app/src/components/Skills/SkillsPage.tsx`
+Added a **Fast / Balanced / High** quality preset selector to TronikSlate's video generation pipeline, inspired by the LTX-Desktop-WanGP app.
 
-`LoraPanelPreview.handleAddShot()` only set `model_type` but not `base_model_type`. The default `ltx2_19B` from `BASE_GENERATION_PARAMS` leaked through, causing all LoRA shots to render on LTX2 regardless of the actual LoRA architecture.
+| Preset | Steps | LoRA | Behavior |
+|---------|-------|------|----------|
+| ⚡ **Fast** | Profile-defined (~4) | Lightning LoRA | Uses existing accelerator profile (current default) |
+| ⚖️ **Balanced** | 25 | None | Clean render, no accelerator |
+| 💎 **High** | 40 | None | Maximum quality, slowest |
 
-**Fix**: Added `base_model_type: lora.defaultModelType` alongside `model_type`.
+## Files Modified
 
-### 2. Fix: LTX 2.3 (22B) models missing from dropdown
-**File**: `app/server/routes/models.ts`
+### Python Backend
 
-`inferFamily()` checked `architecture.includes('2_2')` (Wan 2.2) before `architecture.startsWith('ltx')`. The architecture `ltx2_22B` contains `2_2` as a substring, causing it to be classified as Wan 2.2 instead of LTX-2.
+#### [model_scanner.py](file:///F:/pinokio/api/TronikSlate/model_scanner.py)
+render_diffs(file:///F:/pinokio/api/TronikSlate/model_scanner.py)
 
-**Fix**: Moved LTX check above Wan 2.2 check, then rewrote `inferFamily()` with:
-- **Explicit `WAN_21_ARCHITECTURES` allowlist** (49 known Wan 2.1 arch names)
-- **Tightened Wan 2.2 regex**: `/_2_2(_|$)/` instead of `includes('2_2')`
-- **Smart fallback**: unknown architectures get auto-generated family groups
-- **`getFamilyLabel()`**: auto-generates title-cased labels for unknown families
-- Added `kugelaudio` and `index_tts` to non-video filter
+Added `QUALITY_PRESETS` dict defining the three tiers.
 
-### 3. Feature: Model selector added to shot-level params
-**File**: `app/src/components/ShotEditor/ParamsEditor.tsx`
+---
 
-The shot-level Parameters tab was missing the model Family/Model/Accelerator Profile selector that existed in GlobalParamsEditor. Added the same selector with per-shot override semantics (crimson highlight, "reset" to fall back to global).
+#### [render_engine.py](file:///F:/pinokio/api/TronikSlate/render_engine.py)
+render_diffs(file:///F:/pinokio/api/TronikSlate/render_engine.py)
 
-### 4. Pinokio launcher restoration (from earlier in session)
-**Files**: `pinokio.json`, `pinokio.js`, `start.js`, `install.js`, `reset.js`, `update.js`
+Replaced unconditional `_get_fastest_profile()` call with preset-aware logic. Reads `sb_state["quality_preset"]` (defaults to "fast"). For Balanced/High, sets fixed step count and skips LoRA.
 
-Restored all Pinokio launcher files from git history after they were erased.
+---
 
-## Skills Created
-- `base-model-type-params`: Always set both `model_type` AND `base_model_type`
-- `model-family-classification`: How family inference works, substring collision prevention
+#### [state.py](file:///F:/pinokio/api/TronikSlate/state.py)
+render_diffs(file:///F:/pinokio/api/TronikSlate/state.py)
+
+Added `quality_preset: str = "fast"` to `SmoothBrainSession` for project persistence.
+
+---
+
+### React Frontend
+
+#### [VideoExport.tsx](file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx)
+render_diffs(file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx)
+
+- New `qualityPreset` state variable
+- 3-button toggle UI (cyan/purple/amber color-coded) between Auto/Manual toggle and Duration slider
+- When Balanced or High is selected, `num_inference_steps` is overridden (25 or 40) and LoRA settings are cleared in the render params
+- Preset name shown in the info bar
 
 ## Verification
-- `/api/models` endpoint returns correct family counts: LTX-2 (10), Wan 2.1 (49), Wan 2.2 (20)
-- LTX 2.3 Dev 22B and Distilled 22B now appear under LTX-2 family
+
+| Check | Result |
+|-------|--------|
+| `tsc --noEmit` | ✅ Clean |
+| Python `py_compile` (3 files) | ✅ Clean |
+| Manual UI test | ⏳ Pending user |

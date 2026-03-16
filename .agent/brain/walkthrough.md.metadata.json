@@ -1,5 +1,5 @@
 {
-  "artifactType":  "ARTIFACT_TYPE_WALKTHROUGH",
-  "summary":  "Walkthrough for 2026-03-09 session: fixed base_model_type leak in LoRA shots, fixed LTX 2.3 model classification collision, added model selector to shot params, restored Pinokio launcher files.",
-  "updatedAt":  "2026-03-09T20:36:23.756910700Z"
+  "artifactType": "ARTIFACT_TYPE_WALKTHROUGH",
+  "summary": "Walkthrough for the Fast/Balanced/High quality preset feature added to TronikSlate video generation. Documents all 4 files changed, shows diffs, and explains the behavior of each preset tier.",
+  "updatedAt": "2026-03-16T15:08:28.072399300Z"
 }

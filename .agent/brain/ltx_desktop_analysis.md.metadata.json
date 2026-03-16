@@ -1,0 +1,5 @@
+{
+  "artifactType": "ARTIFACT_TYPE_OTHER",
+  "summary": "Detailed analysis of LTX-Desktop-WanGP app covering the Fast/Balanced/High quality preset pattern, WanGP bridge architecture, resolution maps, frame computation, dynamic duration clamping, camera motion prompts, structured progress reporting, and additional features like seed locking and prompt enhancement. Includes specific recommendations for adapting these patterns to TronikSlate.",
+  "updatedAt": "2026-03-16T14:58:53.430690900Z"
+}

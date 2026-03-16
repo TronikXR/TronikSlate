@@ -1,6 +1,6 @@
 {
-  "artifactType":  "ARTIFACT_TYPE_TASK",
-  "summary":  "Completed task checklist for wan2gp integration docs, code audit, security fixes, and plugin archival.",
-  "updatedAt":  "2026-03-09T14:29:10.875779600Z",
-  "version":  "2"
+  "artifactType": "ARTIFACT_TYPE_TASK",
+  "summary": "Task checklist for Quality Preset feature — all items completed. Python backend (model_scanner, render_engine, state) and React frontend (VideoExport) changes verified with clean TypeScript and Python compilation.",
+  "updatedAt": "2026-03-16T15:08:28.064832400Z",
+  "version": "2"
 }

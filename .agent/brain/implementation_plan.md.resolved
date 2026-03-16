@@ -1,0 +1,184 @@
+# Add Fast / Balanced / High Quality Presets to Video Generation
+
+Replace the current "always pick fastest profile" behavior with a user-facing quality selector that maps to different step counts and LoRA strategies.
+
+## User's Spec
+
+| Preset | Steps | LoRA | Notes |
+|---------|-------|------|-------|
+| **Fast** | Fewest (profile-defined, typically 4) | Lightning LoRA accelerator | Current default behavior |
+| **Balanced** | 25 | None | No accelerator profile |
+| **High** | 40 | None | No accelerator profile |
+
+## Proposed Changes
+
+### Python Backend (Smooth Brain plugin)
+
+---
+
+#### [MODIFY] [model_scanner.py](file:///F:/pinokio/api/TronikSlate/model_scanner.py)
+
+Add a `QUALITY_PRESETS` dict defining the three tiers:
+
+```python
+QUALITY_PRESETS = {
+    "fast": {"use_profile": True, "num_inference_steps": None},   # steps come from profile
+    "balanced": {"use_profile": False, "num_inference_steps": 25},
+    "high": {"use_profile": False, "num_inference_steps": 40},
+}
+```
+
+---
+
+#### [MODIFY] [render_engine.py](file:///F:/pinokio/api/TronikSlate/render_engine.py)
+
+**[_export_videos](file:///F:/pinokio/api/TronikSlate/render_engine.py#353-540) method** (~line 364–375): Replace the unconditional profile auto-select with quality-preset-aware logic:
+
+```diff
+-        profile_params = {}
+-        try:
+-            profile = self._get_fastest_profile(video_model)
+-            if profile:
+-                profile_params = profile.get("params", {})
+-                log.info("Auto-selected speed profile: %s", profile['name'])
+-            ...
++        quality_preset = sb_state.get("quality_preset", "fast")
++        profile_params = {}
++        preset_cfg = QUALITY_PRESETS.get(quality_preset, QUALITY_PRESETS["fast"])
++        if preset_cfg["use_profile"]:
++            # Fast: use Lightning LoRA accelerator profile
++            try:
++                profile = self._get_fastest_profile(video_model)
++                if profile:
++                    profile_params = profile.get("params", {})
++                    log.info("Quality=%s → speed profile: %s", quality_preset, profile['name'])
++            except Exception as e:
++                log.error("Profile scan failed: %s", e, exc_info=True)
++        else:
++            # Balanced/High: override steps, no LoRA
++            profile_params = {"num_inference_steps": preset_cfg["num_inference_steps"]}
++            log.info("Quality=%s → %d steps, no accelerator", quality_preset, preset_cfg["num_inference_steps"])
+```
+
+The `profile_params` dict is then applied to video params as before (line 459–460).
+
+---
+
+#### [MODIFY] [state.py](file:///F:/pinokio/api/TronikSlate/state.py)
+
+No changes strictly required — [build_video_params](file:///F:/pinokio/api/TronikSlate/state.py#299-325) doesn't touch profiles (that's done in [_export_videos](file:///F:/pinokio/api/TronikSlate/render_engine.py#353-540)). But add `quality_preset` to the [SmoothBrainSession](file:///F:/pinokio/api/TronikSlate/state.py#34-59) dataclass for persistence:
+
+```diff
+ @dataclass
+ class SmoothBrainSession:
+     ...
++    quality_preset: str = "fast"  # fast | balanced | high
+```
+
+---
+
+### TypeScript Backend (Express render route)
+
+---
+
+#### [MODIFY] [render.ts](file:///F:/pinokio/api/TronikSlate/app/server/routes/render.ts)
+
+No changes needed. The quality preset only affects the **Gradio/plugin.py** rendering path. The React [VideoExport.tsx](file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx) path builds its params client-side and sends them fully-formed (including `num_inference_steps`) in the render start request, so the preset logic needs to live in the **frontend** for that path.
+
+The React path already sends `shot.params` directly to the queue.zip, so we just need the frontend to set the right step count and omit accelerator profile params when Balanced or High is selected.
+
+---
+
+### React Frontend
+
+---
+
+#### [MODIFY] [VideoExport.tsx](file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx)
+
+1. **Add state** for quality preset:
+```typescript
+const [qualityPreset, setQualityPreset] = useState<'fast' | 'balanced' | 'high'>('fast');
+```
+
+2. **Add UI** — a 3-button toggle row in the controls section (between duration slider and model info), styled to match the existing Manual/Auto toggle aesthetic:
+
+```tsx
+{/* ── Quality Preset ── */}
+<div className="bg-surface-200/50 px-4 py-3 rounded-lg border border-surface-400">
+    <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">
+        ⚡ Quality Preset
+    </span>
+    <div className="flex gap-2">
+        {(['fast', 'balanced', 'high'] as const).map((preset) => (
+            <button
+                key={preset}
+                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all border ${
+                    qualityPreset === preset
+                        ? preset === 'fast'   ? 'bg-cyan-600/20 border-cyan-500/50 text-cyan-300 shadow-lg'
+                        : preset === 'balanced' ? 'bg-purple-600/20 border-purple-500/50 text-purple-300 shadow-lg'
+                        : 'bg-amber-600/20 border-amber-500/50 text-amber-300 shadow-lg'
+                        : 'bg-surface-300 border-surface-400 text-gray-500 hover:text-gray-300'
+                }`}
+                onClick={() => setQualityPreset(preset)}
+                disabled={isRendering}
+            >
+                {preset === 'fast' ? '⚡ Fast' : preset === 'balanced' ? '⚖️ Balanced' : '💎 High'}
+                <span className="block text-[9px] font-normal mt-0.5 opacity-70">
+                    {preset === 'fast' ? 'Lightning LoRA' : preset === 'balanced' ? '25 steps' : '40 steps'}
+                </span>
+            </button>
+        ))}
+    </div>
+</div>
+```
+
+3. **Wire into `handleGenerateVideos`** (~line 186–198): Override step count based on preset:
+
+```diff
+ const renderShots = shotsToRender.map((shot) => ({
+     prompt: shot.prompt,
+     refImagePath: shot.refImagePath || null,
+     params: {
+         ...videoModelDefaults,
+         model_type: storyData.videoModel,
+         base_model_type: storyData.videoModel,
+         seed: shot.seed,
+         image_mode: 0,
+         video_length: videoLength,
+         resolution: VIDEO_RESOLUTION[storyData.vibe]?.[storyData.videoResolution || storyData.resolution] || '832x480',
++        // Quality preset: override steps (Balanced/High) or leave default for Fast (profile handles it)
++        ...(qualityPreset !== 'fast' && {
++            num_inference_steps: qualityPreset === 'balanced' ? 25 : 40,
++            // Clear any LoRA settings that might come from defaults
++            activated_loras: [],
++            loras_multipliers: '',
++            lset_name: '',
++        }),
+     },
+ }));
+```
+
+4. **Add `qualityPreset` to deps** of `useCallback` for `handleGenerateVideos`.
+
+5. **Add to info bar** (~line 491–496): Show the active preset:
+```diff
+ <span>🎥 <strong className="text-white">{storyData.videoModel}</strong></span>
+ <span>{shots.length} shots</span>
+ <span>{shotDuration}s each</span>
++<span>⚡ {qualityPreset}</span>
+ <span>{storyData.vibe} vibe</span>
+```
+
+## Verification Plan
+
+### Manual Verification (User)
+
+1. **Launch TronikSlate** and navigate to Smooth Brain → Video Export phase
+2. **Observe** the new "Quality Preset" selector — 3 buttons: ⚡ Fast, ⚖️ Balanced, 💎 High
+3. **Click each preset** and verify the button highlights and the info bar shows the selected preset
+4. **Render with "Fast"** — check terminal logs for `"Auto-selected speed profile: ..."` (Lightning LoRA applied)
+5. **Render with "Balanced"** — check terminal logs for `"Quality=balanced → 25 steps, no accelerator"` (no LoRA, 25 steps)
+6. **Render with "High"** — check terminal logs for `"Quality=high → 40 steps, no accelerator"` (no LoRA, 40 steps)
+
+> [!NOTE]
+> There are no existing test frameworks in this project, so verification relies on visual inspection and log checking. If the user would like automated tests added later, we can discuss a test strategy.

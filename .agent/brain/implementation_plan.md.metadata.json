@@ -1,0 +1,5 @@
+{
+  "artifactType": "ARTIFACT_TYPE_IMPLEMENTATION_PLAN",
+  "summary": "Implementation plan for Adding Fast/Balanced/High quality presets to TronikSlate video generation. Covers 3 quality tiers: Fast (fastest Lightning LoRA profile + profile-defined steps), Balanced (25 steps, no LoRA), High (40 steps, no LoRA). Changes span model_scanner.py (constants), render_engine.py (profile selection logic), state.py (build_video_params), render.ts (passthrough), and VideoExport.tsx (UI selector). Includes manual verification plan.",
+  "updatedAt": "2026-03-16T15:05:06.759186800Z"
+}

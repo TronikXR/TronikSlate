@@ -1,0 +1,138 @@
+# LTX-Desktop-WanGP Code Review — Takeaways for TronikSlate
+
+## 🎯 The "Quality" Preset Pattern (Fast / Balanced / High)
+
+### Where it lives
+[SettingsPanel.tsx:92–101](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/frontend/components/SettingsPanel.tsx#L92-L101) — **Image generation only**:
+
+```tsx
+<Select label="Quality" value={settings.imageSteps || 8} ...>
+  <option value={4}>Fast</option>
+  <option value={8}>Balanced</option>
+  <option value={12}>High</option>
+</Select>
+```
+
+### How it maps
+| Label | Steps | Use case |
+|-------|-------|----------|
+| **Fast** | 4 | Quick previews |
+| **Balanced** | 8 | Default / everyday use |
+| **High** | 12 | Final renders |
+
+### For video, the pattern is different
+[video_generation_handler.py:559](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/handlers/video_generation_handler.py#L559):
+
+```python
+steps = 8 if req.model.strip().lower() == "fast" else max(1, settings.pro_model.steps)
+```
+
+Video uses model tiers (`fast` = 8 steps, `pro` = configurable default 20) rather than named quality levels.
+
+> [!TIP]
+> **Recommendation for TronikSlate**: Adopt the **Fast / Balanced / High** naming for the user-facing UI — it's much more intuitive than "speed profiles" or raw step counts. Under the hood, map them to step counts per model family. For Wan models this could be something like Fast=20, Balanced=30, High=50 (tuned to your defaults).
+
+---
+
+## 🏗️ Architecture Patterns Worth Adopting
+
+### 1. In-Process WanGP Session Bridge
+[wangp_bridge.py](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/services/wangp_bridge.py) imports `shared.api.WanGPSession` and calls it **in-process** — no subprocess, no HTTP round-trip. This is the **same API** that TronikSlate uses through its `plugin.py` → `render_engine.py` chain, but the LTX app wraps it more cleanly:
+
+- **Lazy session init** with a session lock (lines 278–292) — session is created once and reused
+- **Manifest-based submission** — a single dict `{"id": 1, "params": settings, "plugin_data": {}}` is submitted to the session's `submit_manifest()` method
+
+### 2. Resolution Map (Static Lookup)
+[wangp_bridge.py:22–29](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/services/wangp_bridge.py#L22-L29):
+
+```python
+_VIDEO_RESOLUTION_MAP = {
+    "512p": {"16:9": "832x480", "9:16": "480x832"},
+    "540p": {"16:9": "960x544", "9:16": "544x960"},
+    "720p": {"16:9": "1280x704", "9:16": "704x1280"},
+    "1080p": {"16:9": "1920x1088", "9:16": "1088x1920"},
+    "1440p": {"16:9": "2560x1440", "9:16": "1440x2560"},
+    "2160p": {"16:9": "3840x2176", "9:16": "2176x3840"},
+}
+```
+
+> [!TIP]
+> **For TronikSlate**: We already have resolution logic, but could benefit from a similar static resolution map that cleanly maps user-friendly labels (like "540p", "720p") × aspect ratios to exact pixel dimensions. This removes the need for runtime calculation.
+
+### 3. Frame Count Computation
+[wangp_bridge.py:214–216](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/services/wangp_bridge.py#L214-L216):
+
+```python
+@staticmethod
+def compute_num_frames(duration_seconds: int, fps: int) -> int:
+    return max(((duration_seconds * fps) // 8) * 8 + 1, 9)
+```
+
+This is the **exact same formula** TronikSlate needs — `(seconds × fps)` rounded down to nearest multiple of 8, plus 1, with a floor of 9 frames. We already implement similar logic; this confirms the formula.
+
+### 4. Dynamic Duration Clamping
+[api-video-options.ts](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/frontend/lib/api-video-options.ts)  + [SettingsPanel.tsx:43–66](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/frontend/components/SettingsPanel.tsx#L43-L66):
+
+Durations dynamically change based on model + resolution + fps:
+```typescript
+const LOCAL_MAX_DURATION: Record<string, number> = { '540p': 20, '720p': 10, '1080p': 5 }
+```
+If you select `1080p`, the max duration is 5 seconds. Change to `540p`, it jumps to 20 seconds.
+
+> [!TIP]
+> **For TronikSlate**: This kind of adaptive constraint display is something our UI could benefit from — graying out or hiding duration options that are impractical at high resolutions, based on VRAM and model limits.
+
+### 5. Camera Motion as Prompt Suffix
+[video_generation_handler.py:197](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/handlers/video_generation_handler.py#L197):
+
+```python
+enhanced_prompt = prompt + self._camera_motion_prompts.get(camera_motion, "")
+```
+
+Camera motion (dolly_in, jib_up, etc.) is implemented by **appending keywords to the prompt** rather than as a model parameter. The mapping is stored in config. Wan2GP supports this natively for some models.
+
+### 6. Structured Progress Reporting
+[wangp_bridge.py:421–524](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/services/wangp_bridge.py#L421-L524) — Excellent progress tracking system:
+
+```python
+phases = {
+    "preparing_model": 4%,
+    "loading_model": 10%,
+    "encoding_text": 18%,
+    "inference_stage_1": 25%,
+    "inference_stage_2": 70%,
+    "inference_stage_3": 80%,
+    "decoding": 90%,
+    "downloading_output": 95%,
+}
+```
+
+Each phase has a **baseline percentage** and a **proportional progress** within the phase. The bridge also parses tqdm output from the WanGP process to extract step-level progress.
+
+> [!TIP]
+> **For TronikSlate**: Our progress bar could show phase-labeled progress similar to this (e.g., "Loading model… 10%", "Denoising pass 1/3… 55%").
+
+---
+
+## 🧩 Additional Noteworthy Features
+
+| Feature | Where | Notes |
+|---------|-------|-------|
+| **Seed locking** | [app_settings.py:75–76](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/state/app_settings.py#L75-L76) | `seed_locked: bool`, `locked_seed: int = 42` — lets users reproduce exact results |
+| **Prompt enhancer toggle** | [app_settings.py:72–73](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/state/app_settings.py#L72-L73) | Separate toggles for T2V and I2V prompt enhancement |
+| **I2V via image drop** | GenSpace.tsx [446–475](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/frontend/views/GenSpace.tsx#L446-L475) | Drop zone for reference image → Image-to-Video |
+| **A2V via audio drop** | GenSpace.tsx [478–510](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/frontend/views/GenSpace.tsx#L478-L510) | Drop zone for audio → Audio-to-Video |
+| **Retake mode** | GenSpace.tsx | Trim a section of existing video and regenerate just that clip |
+| **Generation cancellation** | video_generation_handler.py | Checks `is_generation_cancelled()` at multiple points during generation |
+| **Upscaler toggle** per model tier | [app_settings.py:48–54](file:///F:/pinokio/api/LTX-Desktop-WanGP/app/backend/state/app_settings.py#L48-L54) | `FastModelSettings.use_upscaler`, `ProModelSettings.use_upscaler` |
+
+---
+
+## 📋 Summary: Key Takeaways for TronikSlate
+
+1. **Adopt Fast / Balanced / High quality naming** — map to step counts internally (e.g., Fast=20, Balanced=30, High=50 for Wan). This can **coexist** with our existing speed profile system.
+2. **Static resolution maps** — clean lookup table for label × aspect ratio → pixel dimensions.
+3. **Dynamic UI constraints** — grey out or hide options that don't make sense at the selected quality/resolution combo.
+4. **Phase-based progress** — show users *what's happening* (loading model, denoising pass 1/3, decoding) not just a bare percentage.
+5. **Seed lock** — trivial to implement and very useful for iterative prompt refinement.
+6. **Camera motion prompts** — consider adding a dropdown for common camera motions (dolly, pan, static…) that appends keywords to the prompt.

@@ -1,10 +1,23 @@
-# TronikSlate Wan2GP Integration Documentation
+# Quality Preset Implementation — Task List
 
-- [x] Scan workspace for all wan2gp connection/integration methods
-- [x] Document each integration method found
-- [x] Update README.md with user-facing connection instructions + workflows
-- [x] Code review and audit of TronikSlate
-- [x] Fix security issues (path traversal + CORS)
-- [x] Push changes to GitHub
-- [x] Archive smooth-brain-wan2gp to hoodtronik/smoothbrain_old (private)
-- [x] Delete smooth-brain-wan2gp locally
+## Planning
+- [x] Review LTX-Desktop-WanGP quality settings pattern
+- [x] Audit TronikSlate rendering paths (React + Gradio)
+- [x] Write implementation plan
+- [x] Get user approval on plan
+
+## Backend (Python)
+- [x] Add `QUALITY_PRESETS` constant to [model_scanner.py](file:///F:/pinokio/api/TronikSlate/model_scanner.py)
+- [x] Update [render_engine.py](file:///F:/pinokio/api/TronikSlate/render_engine.py) [_export_videos()](file:///F:/pinokio/api/TronikSlate/render_engine.py#354-549) with preset-aware profile selection
+- [x] Add `quality_preset` field to [state.py](file:///F:/pinokio/api/TronikSlate/state.py) [SmoothBrainSession](file:///F:/pinokio/api/TronikSlate/state.py#34-60)
+
+## Frontend (React)
+- [x] Add quality preset state + 3-button toggle UI to [VideoExport.tsx](file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx)
+- [x] Wire selected preset into `handleGenerateVideos` params
+- [x] Show active preset in info bar
+
+## Verification
+- [x] TypeScript build — `tsc --noEmit` passes clean
+- [x] Python compile — all 3 files pass `py_compile`
+- [ ] Manual test: Open VideoExport, verify 3 quality buttons render
+- [ ] Manual test: Select each preset, verify correct params in terminal

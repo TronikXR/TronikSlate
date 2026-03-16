@@ -51,6 +51,7 @@ class SmoothBrainSession:
 
     # Step 4
     shot_duration: float = 5.0
+    quality_preset: str = "fast"        # fast | balanced | high
     current_step: int = 1
     saved_at: float = field(default_factory=time.time)
 

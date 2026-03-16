@@ -1,6 +1,24 @@
-# TronikSlate Wan2GP Integration Documentation
+# Quality Preset Implementation — Task List
 
-- [/] Scan workspace for all wan2gp connection/integration methods
-- [ ] Document each integration method found
-- [ ] Update README.md with user-facing connection instructions
-- [ ] Verify documentation accuracy
+## Planning
+- [x] Review LTX-Desktop-WanGP quality settings pattern
+- [x] Audit TronikSlate rendering paths (React + Gradio)
+- [x] Write implementation plan
+- [ ] Get user approval on plan
+
+## Backend (Python)
+- [ ] Add `QUALITY_PRESETS` constant to [model_scanner.py](file:///F:/pinokio/api/TronikSlate/model_scanner.py)
+- [ ] Update [render_engine.py](file:///F:/pinokio/api/TronikSlate/render_engine.py) [_export_videos()](file:///F:/pinokio/api/TronikSlate/render_engine.py#353-540) to accept `quality_preset` and select profile/steps accordingly
+- [ ] Update [render_engine.py](file:///F:/pinokio/api/TronikSlate/render_engine.py) [_build_task()](file:///F:/pinokio/api/TronikSlate/render_engine.py#72-113) (optional — unused by video path)
+- [ ] Update [state.py](file:///F:/pinokio/api/TronikSlate/state.py) [build_video_params()](file:///F:/pinokio/api/TronikSlate/state.py#299-325) to accept optional `quality_preset`
+
+## Backend (TypeScript)
+- [ ] Update [render.ts](file:///F:/pinokio/api/TronikSlate/app/server/routes/render.ts) `/api/render/start` to pass `quality_preset` through shot params
+
+## Frontend (React)
+- [ ] Add quality preset selector UI to [VideoExport.tsx](file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx)
+- [ ] Wire selected preset into `handleGenerateVideos` params
+
+## Verification
+- [ ] Manual test: Open VideoExport, verify 3 quality buttons render
+- [ ] Manual test: Select each preset, verify correct params logged in terminal

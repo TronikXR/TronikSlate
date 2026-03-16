@@ -119,6 +119,16 @@ IMAGE_REF_OVERRIDES = {
     },
 }
 
+# ── Quality presets for video generation ────────────────────────────────────
+# Fast   → use Lightning LoRA accelerator profile (fewest steps, profile-defined)
+# Balanced → 25 inference steps, no accelerator LoRA
+# High   → 40 inference steps, no accelerator LoRA
+QUALITY_PRESETS = {
+    "fast":     {"use_profile": True,  "num_inference_steps": None},
+    "balanced": {"use_profile": False, "num_inference_steps": 25},
+    "high":     {"use_profile": False, "num_inference_steps": 40},
+}
+
 
 def get_image_model_overrides(model_id: str) -> dict:
     """Return Smooth Brain speed-lora overrides for an image model, or {}.

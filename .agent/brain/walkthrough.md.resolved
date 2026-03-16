@@ -1,40 +1,4114 @@
-# Session Walkthrough — 2026-03-09
+# Quality Preset Feature — Walkthrough
 
-## Changes Made
+## What Changed
 
-### 1. Fix: LoRA shots using wrong model (`base_model_type` bug)
-**File**: [app/src/components/Skills/SkillsPage.tsx](file:///f:/pinokio/api/TronikSlate/app/src/components/Skills/SkillsPage.tsx)
+Added a **Fast / Balanced / High** quality preset selector to TronikSlate's video generation pipeline, inspired by the LTX-Desktop-WanGP app.
 
-`LoraPanelPreview.handleAddShot()` only set `model_type` but not `base_model_type`. The default `ltx2_19B` from `BASE_GENERATION_PARAMS` leaked through, causing all LoRA shots to render on LTX2 regardless of the actual LoRA architecture.
+| Preset | Steps | LoRA | Behavior |
+|---------|-------|------|----------|
+| ⚡ **Fast** | Profile-defined (~4) | Lightning LoRA | Uses existing accelerator profile (current default) |
+| ⚖️ **Balanced** | 25 | None | Clean render, no accelerator |
+| 💎 **High** | 40 | None | Maximum quality, slowest |
 
-**Fix**: Added `base_model_type: lora.defaultModelType` alongside `model_type`.
+## Files Modified
 
-### 2. Fix: LTX 2.3 (22B) models missing from dropdown
-**File**: [app/server/routes/models.ts](file:///f:/pinokio/api/TronikSlate/app/server/routes/models.ts)
+### Python Backend
 
-[inferFamily()](file:///f:/pinokio/api/TronikSlate/app/server/routes/models.ts#113-147) checked `architecture.includes('2_2')` (Wan 2.2) before `architecture.startsWith('ltx')`. The architecture `ltx2_22B` contains `2_2` as a substring, causing it to be classified as Wan 2.2 instead of LTX-2.
+#### [model_scanner.py](file:///F:/pinokio/api/TronikSlate/model_scanner.py)
+```diff:model_scanner.py
+"""
+model_scanner.py — Smooth Brain Plugin
+Scans Wan2GP's defaults/ and finetunes/ folders to build video and image model lists.
+Ported from TronikSlate's server/routes/models.ts.
+"""
 
-**Fix**: Moved LTX check above Wan 2.2 check, then rewrote [inferFamily()](file:///f:/pinokio/api/TronikSlate/app/server/routes/models.ts#113-147) with:
-- **Explicit `WAN_21_ARCHITECTURES` allowlist** (49 known Wan 2.1 arch names)
-- **Tightened Wan 2.2 regex**: `/_2_2(_|$)/` instead of `includes('2_2')`
-- **Smart fallback**: unknown architectures get auto-generated family groups
-- **[getFamilyLabel()](file:///f:/pinokio/api/TronikSlate/app/server/routes/models.ts#273-283)**: auto-generates title-cased labels for unknown families
-- Added `kugelaudio` and `index_tts` to non-video filter
+from __future__ import annotations
+import json
+import os
+from typing import Optional
 
-### 3. Feature: Model selector added to shot-level params
-**File**: [app/src/components/ShotEditor/ParamsEditor.tsx](file:///f:/pinokio/api/TronikSlate/app/src/components/ShotEditor/ParamsEditor.tsx)
+# Resolve wan2gp app root — plugin lives at app/plugins/smooth_brain/
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+WAN2GP_APP = os.path.abspath(os.path.join(_PLUGIN_DIR, "..", ".."))
 
-The shot-level Parameters tab was missing the model Family/Model/Accelerator Profile selector that existed in GlobalParamsEditor. Added the same selector with per-shot override semantics (crimson highlight, "reset" to fall back to global).
+# ── Architecture classification ────────────────────────────────────────────────
 
-### 4. Pinokio launcher restoration (from earlier in session)
-**Files**: [pinokio.json](file:///f:/pinokio/api/TronikSlate/pinokio.json), [pinokio.js](file:///f:/pinokio/api/TronikSlate/pinokio.js), [start.js](file:///f:/pinokio/api/TronikSlate/start.js), [install.js](file:///f:/pinokio/api/TronikSlate/install.js), [reset.js](file:///f:/pinokio/api/TronikSlate/reset.js), [update.js](file:///f:/pinokio/api/TronikSlate/update.js)
+NON_VIDEO_PREFIXES = [
+    "flux", "qwen", "z_image", "chatterbox", "qwen3_tts",
+    "heartmula", "pi_flux", "ace_step",
+]
+I2V_ARCH_PATTERNS = ["i2v", "ti2v"]
+# LTX models support I2V natively even without i2v in arch name
+I2V_ARCH_FAMILIES = ["ltx2_19B", "ltxv_13B", "ltx2_distilled"]
+IMAGE_ARCH_PREFIXES = ["flux", "qwen_image", "pi_flux"]
+IMAGE_MODEL_EXCLUDE = ["qwen_image_layered", "flux2_dev", "flux2_dev_nvfp4"]
 
-Restored all Pinokio launcher files from git history after they were erased.
+# ── Image model overrides for Smooth Brain ──────────────────────────────────
+# Speed-lora optimized settings per image model. These override wan2gp's
+# defaults when rendering storyboard images via Smooth Brain.
+IMAGE_MODEL_OVERRIDES = {
+    # Qwen Image Edit 20B — Lightning 4-step accelerator
+    "qwen_image_edit_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen Edit v1.0 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # Qwen Image 20B — same Lightning accelerator
+    "qwen_image_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen v1.0 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # Qwen Image 2512 20B (newer version) — uses 2511 Lightning lora
+    "qwen_image_2512_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen Edit 2511 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # Qwen Image Edit Plus 20B (2509) — same v1.0 Lightning lora as base edit
+    "qwen_image_edit_plus_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen Edit v1.0 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # pi-FLUX.2 Dev 32B — naturally 4-step, no loras needed
+    "pi_flux2": {
+        "num_inference_steps": 4,
+        "guidance_scale": 5,
+        "flow_shift": 5,
+        "sample_solver": "",
+        "image_mode": 1,
+        "embedded_guidance_scale": 4,
+    },
+}
 
-## Skills Created
-- `base-model-type-params`: Always set both `model_type` AND `base_model_type`
-- `model-family-classification`: How family inference works, substring collision prevention
+# Reference-mode overrides applied ONLY when image_refs are provided.
+# These cause validation failure if set without actual image refs.
+IMAGE_REF_OVERRIDES = {
+    "qwen_image": {  # prefix match for all Qwen models
+        "video_prompt_type": "I",
+        "image_prompt_type": "",
+        "remove_background_images_ref": 1,
+        "image_refs_relative_size": 50,
+    },
+    "pi_flux": {  # prefix match for pi-FLUX models
+        "video_prompt_type": "I",
+        "image_prompt_type": "",
+        "remove_background_images_ref": 0,
+        "image_refs_relative_size": 50,
+    },
+    "flux": {  # prefix match for Flux/Klein models
+        "video_prompt_type": "I",
+        "image_prompt_type": "",
+        "remove_background_images_ref": 0,
+        "image_refs_relative_size": 50,
+    },
+}
+
+
+def get_image_model_overrides(model_id: str) -> dict:
+    """Return Smooth Brain speed-lora overrides for an image model, or {}.
+    Falls back to prefix matching for future qwen_image_* / pi_flux* variants."""
+    if model_id in IMAGE_MODEL_OVERRIDES:
+        return dict(IMAGE_MODEL_OVERRIDES[model_id])
+    # Fallback: any qwen_image model gets the base qwen_image_20B overrides
+    if model_id.startswith("qwen_image"):
+        return dict(IMAGE_MODEL_OVERRIDES.get("qwen_image_20B", {}))
+    # Fallback: any pi_flux model gets the base pi_flux2 overrides
+    if model_id.startswith("pi_flux"):
+        return dict(IMAGE_MODEL_OVERRIDES.get("pi_flux2", {}))
+    return {}
+
+
+def get_image_ref_overrides(model_id: str) -> dict:
+    """Return reference-image-handling overrides for a model (only when refs exist)."""
+    for prefix, overrides in IMAGE_REF_OVERRIDES.items():
+        if model_id.startswith(prefix):
+            return dict(overrides)
+    return {}
+
+
+# Priority order for auto-selecting the best video model
+VIDEO_PRIORITY = [
+    "ltx2_distilled",
+    "i2v_2_2",
+    "ti2v_2_2",
+    "i2v",
+    "hunyuan_i2v",
+    "hunyuan_1_5_i2v",
+    "k5_pro_i2v",
+]
+
+# Whitelist for Simple mode (match by id or architecture)
+SIMPLE_I2V_IDS = [
+    "i2v", "i2v_2_2", "ti2v_2_2",
+    "hunyuan_i2v", "hunyuan_1_5_i2v",
+    "ltx2_distilled", "ltx2_19B",
+    "k5_pro_i2v", "k5_lite_i2v",
+]
+
+
+def _is_i2v(arch: str, model_id: str) -> bool:
+    arch_l = arch.lower()
+    id_l = model_id.lower()
+    if any(p in arch_l or p in id_l for p in I2V_ARCH_PATTERNS):
+        return True
+    if arch in I2V_ARCH_FAMILIES or model_id in I2V_ARCH_FAMILIES:
+        return True
+    return False
+
+
+def _resolve_model_urls(model_data: dict, defaults_dir: str) -> list[str]:
+    """Resolve model URLs, following string references to base model defs."""
+    urls = model_data.get("model", {}).get("URLs", [])
+    if isinstance(urls, str):
+        # String reference to another model definition (e.g. "i2v")
+        ref_path = os.path.join(defaults_dir, urls + ".json")
+        if os.path.isfile(ref_path):
+            try:
+                with open(ref_path, encoding="utf-8") as f:
+                    ref_data = json.load(f)
+                urls = ref_data.get("model", {}).get("URLs", [])
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[model_scanner] Failed to resolve model ref '{urls}': {e}")
+                urls = []
+        else:
+            urls = []
+    if not isinstance(urls, list):
+        urls = []
+    return urls
+
+
+def _is_installed(urls: list[str], ckpts_dir: str) -> bool:
+    """Check if at least one model file from the URLs exists in ckpts/."""
+    return any(
+        os.path.isfile(os.path.join(ckpts_dir, url.split("/")[-1]))
+        for url in urls
+        if url
+    )
+
+
+def _scan_folder(folder: str, source: str) -> list[dict]:
+    """Scan a defaults/ or finetunes/ folder for video model JSONs."""
+    if not os.path.isdir(folder):
+        return []
+    models = []
+    for fname in os.listdir(folder):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(folder, fname)
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                data = json.load(f)
+            mb = data.get("model", {})
+            arch = mb.get("architecture", "")
+            name = mb.get("name", "")
+            if not arch or not name:
+                continue
+            # Skip non-video families
+            if any(arch.startswith(p) for p in NON_VIDEO_PREFIXES):
+                continue
+            model_id = fname[:-5]  # strip .json
+            models.append({
+                "id": model_id,
+                "name": name,
+                "architecture": arch,
+                "source": source,
+                "isI2V": _is_i2v(arch, model_id),
+                "description": mb.get("description", ""),
+                "_data": data,  # keep raw data for URL resolution
+            })
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[model_scanner] Skipping {fname}: {e}")
+            continue
+    return models
+
+
+def scan_video_models(simple: bool = True) -> list[dict]:
+    """
+    Return I2V-capable video models that are actually installed in Wan2GP.
+    simple=True → only well-known default I2V model IDs (matches TronikSlate Simple mode).
+    simple=False → all I2V models including finetunes.
+    Filters to models whose ckpt files actually exist on disk.
+    """
+    defaults_dir = os.path.join(WAN2GP_APP, "defaults")
+    finetunes_dir = os.path.join(WAN2GP_APP, "finetunes")
+    ckpts_dir = os.path.join(WAN2GP_APP, "ckpts")
+    all_models = _scan_folder(defaults_dir, "default") + _scan_folder(finetunes_dir, "finetune")
+    i2v_models = [m for m in all_models if m["isI2V"]]
+
+    # Filter to installed models only
+    installed = []
+    for m in i2v_models:
+        urls = _resolve_model_urls(m.get("_data", {}), defaults_dir)
+        if _is_installed(urls, ckpts_dir):
+            # Remove internal _data before returning
+            result = {k: v for k, v in m.items() if k != "_data"}
+            installed.append(result)
+
+    if simple:
+        return [
+            m for m in installed
+            if m["source"] == "default" and (
+                m["id"] in SIMPLE_I2V_IDS or m["architecture"] in SIMPLE_I2V_IDS
+            )
+        ]
+    return installed
+
+
+
+def get_best_video_model(models: list[dict]) -> str:
+    """Return the highest-priority installed video model ID."""
+    ids = {m["id"] for m in models}
+    for pid in VIDEO_PRIORITY:
+        if pid in ids:
+            return pid
+    return models[0]["id"] if models else ""
+
+
+def scan_image_models() -> list[dict]:
+    """
+    Return installed image-generation models (flux / qwen_image arch).
+    Checks ckpts/ to confirm the model file actually exists on disk.
+    """
+    defaults_dir = os.path.join(WAN2GP_APP, "defaults")
+    finetunes_dir = os.path.join(WAN2GP_APP, "finetunes")
+    ckpts_dir = os.path.join(WAN2GP_APP, "ckpts")
+    installed = []
+
+    for folder, source in [(defaults_dir, "default"), (finetunes_dir, "finetune")]:
+        if not os.path.isdir(folder):
+            continue
+        for fname in os.listdir(folder):
+            if not fname.endswith(".json"):
+                continue
+            model_id = fname[:-5]
+            if model_id in IMAGE_MODEL_EXCLUDE:
+                continue
+            fpath = os.path.join(folder, fname)
+            try:
+                with open(fpath, encoding="utf-8") as f:
+                    data = json.load(f)
+                mb = data.get("model", {})
+                arch = mb.get("architecture", "")
+                name = mb.get("name", "")
+                if not arch or not name:
+                    continue
+                if not any(arch.startswith(p) for p in IMAGE_ARCH_PREFIXES):
+                    continue
+                # Check if at least one model file exists in ckpts/
+                urls = mb.get("URLs", [])
+                file_exists = any(
+                    os.path.isfile(os.path.join(ckpts_dir, url.split("/")[-1]))
+                    for url in urls
+                    if url
+                )
+                if file_exists:
+                    installed.append({
+                        "id": model_id,
+                        "name": name,
+                        "architecture": arch,
+                        "source": source,
+                    })
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[model_scanner] Skipping image model {fname}: {e}")
+                continue
+    return installed
+
+
+def get_best_image_model(models: list[dict]) -> str:
+    """Priority: Klein → Qwen → first."""
+    for m in models:
+        if "klein" in m["name"].lower() or "klein" in m["id"].lower():
+            return m["id"]
+    for m in models:
+        if "qwen" in m["name"].lower() or "qwen" in m["id"].lower():
+            return m["id"]
+    return models[0]["id"] if models else ""
+
+
+def scan_profiles(model_id: str) -> list[dict]:
+    """
+    Return accelerator profiles for a model.
+    Looks up the model's architecture from defaults/, then reads profiles/<arch>/*.json.
+    """
+    defaults_dir = os.path.join(WAN2GP_APP, "defaults")
+    profiles_root = os.path.join(WAN2GP_APP, "profiles")
+    if not os.path.isdir(profiles_root):
+        return []
+
+    # Look up architecture
+    arch = ""
+    json_path = os.path.join(defaults_dir, f"{model_id}.json")
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            arch = data.get("model", {}).get("architecture", "")
+        except Exception:
+            pass
+
+    if not arch:
+        return []
+
+    # Arch → profile dir mapping (from models.ts)
+    ARCH_TO_PROFILE: dict[str, list[str]] = {
+        "i2v": ["wan_i2v"], "i2v_720p": ["wan_i2v"], "i2v_nvfp4": ["wan_i2v"],
+        "i2v_2_2": ["wan_2_2"], "ti2v_2_2": ["wan_2_2"], "ti2v_2_2_fastwan": ["wan_2_2"],
+        "t2v": ["wan"], "t2v_sf": ["wan"], "t2v_2_2": ["wan_2_2"],
+        "hunyuan_1_5_i2v": ["hunyuan_1_5"], "hunyuan_1_5_t2v": ["hunyuan_1_5"],
+        "hunyuan_i2v": ["wan_i2v"],
+    }
+    profile_dirs = ARCH_TO_PROFILE.get(arch, [])
+
+    # Fallback: match against existing subdirectory names
+    if not profile_dirs:
+        existing = [
+            d for d in os.listdir(profiles_root)
+            if os.path.isdir(os.path.join(profiles_root, d))
+        ]
+        exact = next((d for d in existing if d == arch), None)
+        if exact:
+            profile_dirs = [exact]
+        else:
+            prefix = next((d for d in existing if arch.startswith(d) or d.startswith(arch)), None)
+            if prefix:
+                profile_dirs = [prefix]
+
+    profiles: list[dict] = []
+    for pdir in profile_dirs:
+        dir_path = os.path.join(profiles_root, pdir)
+        if not os.path.isdir(dir_path):
+            continue
+        for fname in os.listdir(dir_path):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(dir_path, fname), encoding="utf-8") as f:
+                    params = json.load(f)
+                profiles.append({"name": fname[:-5], "params": params})
+            except Exception:
+                continue
+
+    profiles.sort(key=lambda p: p["name"])
+    return profiles
+===
+"""
+model_scanner.py — Smooth Brain Plugin
+Scans Wan2GP's defaults/ and finetunes/ folders to build video and image model lists.
+Ported from TronikSlate's server/routes/models.ts.
+"""
+
+from __future__ import annotations
+import json
+import os
+from typing import Optional
+
+# Resolve wan2gp app root — plugin lives at app/plugins/smooth_brain/
+_PLUGIN_DIR = os.path.dirname(os.path.abspath(__file__))
+WAN2GP_APP = os.path.abspath(os.path.join(_PLUGIN_DIR, "..", ".."))
+
+# ── Architecture classification ────────────────────────────────────────────────
+
+NON_VIDEO_PREFIXES = [
+    "flux", "qwen", "z_image", "chatterbox", "qwen3_tts",
+    "heartmula", "pi_flux", "ace_step",
+]
+I2V_ARCH_PATTERNS = ["i2v", "ti2v"]
+# LTX models support I2V natively even without i2v in arch name
+I2V_ARCH_FAMILIES = ["ltx2_19B", "ltxv_13B", "ltx2_distilled"]
+IMAGE_ARCH_PREFIXES = ["flux", "qwen_image", "pi_flux"]
+IMAGE_MODEL_EXCLUDE = ["qwen_image_layered", "flux2_dev", "flux2_dev_nvfp4"]
+
+# ── Image model overrides for Smooth Brain ──────────────────────────────────
+# Speed-lora optimized settings per image model. These override wan2gp's
+# defaults when rendering storyboard images via Smooth Brain.
+IMAGE_MODEL_OVERRIDES = {
+    # Qwen Image Edit 20B — Lightning 4-step accelerator
+    "qwen_image_edit_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen Edit v1.0 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # Qwen Image 20B — same Lightning accelerator
+    "qwen_image_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen v1.0 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # Qwen Image 2512 20B (newer version) — uses 2511 Lightning lora
+    "qwen_image_2512_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen Edit 2511 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # Qwen Image Edit Plus 20B (2509) — same v1.0 Lightning lora as base edit
+    "qwen_image_edit_plus_20B": {
+        "num_inference_steps": 4,
+        "guidance_scale": 1,
+        "flow_shift": 5,
+        "sample_solver": "default",
+        "image_mode": 1,
+        "lset_name": "qwen\\Lightning Qwen Edit v1.0 - 4 Steps.json",
+        "activated_loras": [
+            "https://huggingface.co/DeepBeepMeep/Qwen_image/resolve/main/"
+            "loras_accelerators/Qwen-Image-Edit-Lightning-4steps-V1.0-bf16.safetensors"
+        ],
+        "loras_multipliers": "1|",
+    },
+    # pi-FLUX.2 Dev 32B — naturally 4-step, no loras needed
+    "pi_flux2": {
+        "num_inference_steps": 4,
+        "guidance_scale": 5,
+        "flow_shift": 5,
+        "sample_solver": "",
+        "image_mode": 1,
+        "embedded_guidance_scale": 4,
+    },
+}
+
+# Reference-mode overrides applied ONLY when image_refs are provided.
+# These cause validation failure if set without actual image refs.
+IMAGE_REF_OVERRIDES = {
+    "qwen_image": {  # prefix match for all Qwen models
+        "video_prompt_type": "I",
+        "image_prompt_type": "",
+        "remove_background_images_ref": 1,
+        "image_refs_relative_size": 50,
+    },
+    "pi_flux": {  # prefix match for pi-FLUX models
+        "video_prompt_type": "I",
+        "image_prompt_type": "",
+        "remove_background_images_ref": 0,
+        "image_refs_relative_size": 50,
+    },
+    "flux": {  # prefix match for Flux/Klein models
+        "video_prompt_type": "I",
+        "image_prompt_type": "",
+        "remove_background_images_ref": 0,
+        "image_refs_relative_size": 50,
+    },
+}
+
+# ── Quality presets for video generation ────────────────────────────────────
+# Fast   → use Lightning LoRA accelerator profile (fewest steps, profile-defined)
+# Balanced → 25 inference steps, no accelerator LoRA
+# High   → 40 inference steps, no accelerator LoRA
+QUALITY_PRESETS = {
+    "fast":     {"use_profile": True,  "num_inference_steps": None},
+    "balanced": {"use_profile": False, "num_inference_steps": 25},
+    "high":     {"use_profile": False, "num_inference_steps": 40},
+}
+
+
+def get_image_model_overrides(model_id: str) -> dict:
+    """Return Smooth Brain speed-lora overrides for an image model, or {}.
+    Falls back to prefix matching for future qwen_image_* / pi_flux* variants."""
+    if model_id in IMAGE_MODEL_OVERRIDES:
+        return dict(IMAGE_MODEL_OVERRIDES[model_id])
+    # Fallback: any qwen_image model gets the base qwen_image_20B overrides
+    if model_id.startswith("qwen_image"):
+        return dict(IMAGE_MODEL_OVERRIDES.get("qwen_image_20B", {}))
+    # Fallback: any pi_flux model gets the base pi_flux2 overrides
+    if model_id.startswith("pi_flux"):
+        return dict(IMAGE_MODEL_OVERRIDES.get("pi_flux2", {}))
+    return {}
+
+
+def get_image_ref_overrides(model_id: str) -> dict:
+    """Return reference-image-handling overrides for a model (only when refs exist)."""
+    for prefix, overrides in IMAGE_REF_OVERRIDES.items():
+        if model_id.startswith(prefix):
+            return dict(overrides)
+    return {}
+
+
+# Priority order for auto-selecting the best video model
+VIDEO_PRIORITY = [
+    "ltx2_distilled",
+    "i2v_2_2",
+    "ti2v_2_2",
+    "i2v",
+    "hunyuan_i2v",
+    "hunyuan_1_5_i2v",
+    "k5_pro_i2v",
+]
+
+# Whitelist for Simple mode (match by id or architecture)
+SIMPLE_I2V_IDS = [
+    "i2v", "i2v_2_2", "ti2v_2_2",
+    "hunyuan_i2v", "hunyuan_1_5_i2v",
+    "ltx2_distilled", "ltx2_19B",
+    "k5_pro_i2v", "k5_lite_i2v",
+]
+
+
+def _is_i2v(arch: str, model_id: str) -> bool:
+    arch_l = arch.lower()
+    id_l = model_id.lower()
+    if any(p in arch_l or p in id_l for p in I2V_ARCH_PATTERNS):
+        return True
+    if arch in I2V_ARCH_FAMILIES or model_id in I2V_ARCH_FAMILIES:
+        return True
+    return False
+
+
+def _resolve_model_urls(model_data: dict, defaults_dir: str) -> list[str]:
+    """Resolve model URLs, following string references to base model defs."""
+    urls = model_data.get("model", {}).get("URLs", [])
+    if isinstance(urls, str):
+        # String reference to another model definition (e.g. "i2v")
+        ref_path = os.path.join(defaults_dir, urls + ".json")
+        if os.path.isfile(ref_path):
+            try:
+                with open(ref_path, encoding="utf-8") as f:
+                    ref_data = json.load(f)
+                urls = ref_data.get("model", {}).get("URLs", [])
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[model_scanner] Failed to resolve model ref '{urls}': {e}")
+                urls = []
+        else:
+            urls = []
+    if not isinstance(urls, list):
+        urls = []
+    return urls
+
+
+def _is_installed(urls: list[str], ckpts_dir: str) -> bool:
+    """Check if at least one model file from the URLs exists in ckpts/."""
+    return any(
+        os.path.isfile(os.path.join(ckpts_dir, url.split("/")[-1]))
+        for url in urls
+        if url
+    )
+
+
+def _scan_folder(folder: str, source: str) -> list[dict]:
+    """Scan a defaults/ or finetunes/ folder for video model JSONs."""
+    if not os.path.isdir(folder):
+        return []
+    models = []
+    for fname in os.listdir(folder):
+        if not fname.endswith(".json"):
+            continue
+        fpath = os.path.join(folder, fname)
+        try:
+            with open(fpath, encoding="utf-8") as f:
+                data = json.load(f)
+            mb = data.get("model", {})
+            arch = mb.get("architecture", "")
+            name = mb.get("name", "")
+            if not arch or not name:
+                continue
+            # Skip non-video families
+            if any(arch.startswith(p) for p in NON_VIDEO_PREFIXES):
+                continue
+            model_id = fname[:-5]  # strip .json
+            models.append({
+                "id": model_id,
+                "name": name,
+                "architecture": arch,
+                "source": source,
+                "isI2V": _is_i2v(arch, model_id),
+                "description": mb.get("description", ""),
+                "_data": data,  # keep raw data for URL resolution
+            })
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[model_scanner] Skipping {fname}: {e}")
+            continue
+    return models
+
+
+def scan_video_models(simple: bool = True) -> list[dict]:
+    """
+    Return I2V-capable video models that are actually installed in Wan2GP.
+    simple=True → only well-known default I2V model IDs (matches TronikSlate Simple mode).
+    simple=False → all I2V models including finetunes.
+    Filters to models whose ckpt files actually exist on disk.
+    """
+    defaults_dir = os.path.join(WAN2GP_APP, "defaults")
+    finetunes_dir = os.path.join(WAN2GP_APP, "finetunes")
+    ckpts_dir = os.path.join(WAN2GP_APP, "ckpts")
+    all_models = _scan_folder(defaults_dir, "default") + _scan_folder(finetunes_dir, "finetune")
+    i2v_models = [m for m in all_models if m["isI2V"]]
+
+    # Filter to installed models only
+    installed = []
+    for m in i2v_models:
+        urls = _resolve_model_urls(m.get("_data", {}), defaults_dir)
+        if _is_installed(urls, ckpts_dir):
+            # Remove internal _data before returning
+            result = {k: v for k, v in m.items() if k != "_data"}
+            installed.append(result)
+
+    if simple:
+        return [
+            m for m in installed
+            if m["source"] == "default" and (
+                m["id"] in SIMPLE_I2V_IDS or m["architecture"] in SIMPLE_I2V_IDS
+            )
+        ]
+    return installed
+
+
+
+def get_best_video_model(models: list[dict]) -> str:
+    """Return the highest-priority installed video model ID."""
+    ids = {m["id"] for m in models}
+    for pid in VIDEO_PRIORITY:
+        if pid in ids:
+            return pid
+    return models[0]["id"] if models else ""
+
+
+def scan_image_models() -> list[dict]:
+    """
+    Return installed image-generation models (flux / qwen_image arch).
+    Checks ckpts/ to confirm the model file actually exists on disk.
+    """
+    defaults_dir = os.path.join(WAN2GP_APP, "defaults")
+    finetunes_dir = os.path.join(WAN2GP_APP, "finetunes")
+    ckpts_dir = os.path.join(WAN2GP_APP, "ckpts")
+    installed = []
+
+    for folder, source in [(defaults_dir, "default"), (finetunes_dir, "finetune")]:
+        if not os.path.isdir(folder):
+            continue
+        for fname in os.listdir(folder):
+            if not fname.endswith(".json"):
+                continue
+            model_id = fname[:-5]
+            if model_id in IMAGE_MODEL_EXCLUDE:
+                continue
+            fpath = os.path.join(folder, fname)
+            try:
+                with open(fpath, encoding="utf-8") as f:
+                    data = json.load(f)
+                mb = data.get("model", {})
+                arch = mb.get("architecture", "")
+                name = mb.get("name", "")
+                if not arch or not name:
+                    continue
+                if not any(arch.startswith(p) for p in IMAGE_ARCH_PREFIXES):
+                    continue
+                # Check if at least one model file exists in ckpts/
+                urls = mb.get("URLs", [])
+                file_exists = any(
+                    os.path.isfile(os.path.join(ckpts_dir, url.split("/")[-1]))
+                    for url in urls
+                    if url
+                )
+                if file_exists:
+                    installed.append({
+                        "id": model_id,
+                        "name": name,
+                        "architecture": arch,
+                        "source": source,
+                    })
+            except (json.JSONDecodeError, OSError) as e:
+                print(f"[model_scanner] Skipping image model {fname}: {e}")
+                continue
+    return installed
+
+
+def get_best_image_model(models: list[dict]) -> str:
+    """Priority: Klein → Qwen → first."""
+    for m in models:
+        if "klein" in m["name"].lower() or "klein" in m["id"].lower():
+            return m["id"]
+    for m in models:
+        if "qwen" in m["name"].lower() or "qwen" in m["id"].lower():
+            return m["id"]
+    return models[0]["id"] if models else ""
+
+
+def scan_profiles(model_id: str) -> list[dict]:
+    """
+    Return accelerator profiles for a model.
+    Looks up the model's architecture from defaults/, then reads profiles/<arch>/*.json.
+    """
+    defaults_dir = os.path.join(WAN2GP_APP, "defaults")
+    profiles_root = os.path.join(WAN2GP_APP, "profiles")
+    if not os.path.isdir(profiles_root):
+        return []
+
+    # Look up architecture
+    arch = ""
+    json_path = os.path.join(defaults_dir, f"{model_id}.json")
+    if os.path.isfile(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            arch = data.get("model", {}).get("architecture", "")
+        except Exception:
+            pass
+
+    if not arch:
+        return []
+
+    # Arch → profile dir mapping (from models.ts)
+    ARCH_TO_PROFILE: dict[str, list[str]] = {
+        "i2v": ["wan_i2v"], "i2v_720p": ["wan_i2v"], "i2v_nvfp4": ["wan_i2v"],
+        "i2v_2_2": ["wan_2_2"], "ti2v_2_2": ["wan_2_2"], "ti2v_2_2_fastwan": ["wan_2_2"],
+        "t2v": ["wan"], "t2v_sf": ["wan"], "t2v_2_2": ["wan_2_2"],
+        "hunyuan_1_5_i2v": ["hunyuan_1_5"], "hunyuan_1_5_t2v": ["hunyuan_1_5"],
+        "hunyuan_i2v": ["wan_i2v"],
+    }
+    profile_dirs = ARCH_TO_PROFILE.get(arch, [])
+
+    # Fallback: match against existing subdirectory names
+    if not profile_dirs:
+        existing = [
+            d for d in os.listdir(profiles_root)
+            if os.path.isdir(os.path.join(profiles_root, d))
+        ]
+        exact = next((d for d in existing if d == arch), None)
+        if exact:
+            profile_dirs = [exact]
+        else:
+            prefix = next((d for d in existing if arch.startswith(d) or d.startswith(arch)), None)
+            if prefix:
+                profile_dirs = [prefix]
+
+    profiles: list[dict] = []
+    for pdir in profile_dirs:
+        dir_path = os.path.join(profiles_root, pdir)
+        if not os.path.isdir(dir_path):
+            continue
+        for fname in os.listdir(dir_path):
+            if not fname.endswith(".json"):
+                continue
+            try:
+                with open(os.path.join(dir_path, fname), encoding="utf-8") as f:
+                    params = json.load(f)
+                profiles.append({"name": fname[:-5], "params": params})
+            except Exception:
+                continue
+
+    profiles.sort(key=lambda p: p["name"])
+    return profiles
+```
+
+Added `QUALITY_PRESETS` dict defining the three tiers.
+
+---
+
+#### [render_engine.py](file:///F:/pinokio/api/TronikSlate/render_engine.py)
+```diff:render_engine.py
+from __future__ import annotations
+# NOTE: Canonical render mixin retained to resolve branch merge conflicts.
+import os
+import glob
+import time
+import traceback
+import logging
+import gradio as gr
+from typing import Any, Dict, List, Optional
+from .constants import (
+    RESO_MAP, VIDEO_RESOLUTION,
+    STATUS_PENDING, STATUS_RENDERING, STATUS_READY, STATUS_APPROVED, STATUS_REJECTED
+)
+from .state import (
+    save_project, copy_to_project, is_ltx_model, ShotState, build_video_params
+)
+from .ollama import refine_single_prompt
+from .model_scanner import (
+    get_image_model_overrides, scan_profiles, get_image_ref_overrides
+)
+
+log = logging.getLogger("smooth_brain")
+
+class RenderEngineMixin:
+    def _build_cli_state(self):
+        """Build the minimal state dict that process_tasks_cli expects."""
+        return {
+            "gen": {
+                "queue": [], "in_progress": False,
+                "file_list": [], "file_settings_list": [],
+                "audio_file_list": [], "audio_file_settings_list": [],
+                "selected": 0, "audio_selected": 0,
+                "prompt_no": 0, "prompts_max": 0,
+                "repeat_no": 0, "total_generation": 1,
+                "window_no": 0, "total_windows": 0,
+                "progress_status": "", "process_status": "process:main",
+            },
+            "loras": [],
+        }
+
+    def _get_fastest_profile(self, model_id: str) -> dict | None:
+        """Auto-select the fastest speed profile for a video model.
+        Matches TronikSlate's ranking: i2v preference → latest date → lowest steps.
+        Returns the profile dict {name, params} or None.
+        """
+        import re
+        profiles = scan_profiles(model_id)
+        if not profiles:
+            return None
+        is_i2v = "i2v" in model_id.lower() or "ti2v" in model_id.lower()
+
+        def _rank(p):
+            name = p["name"].lower()
+            # 1) Prefer i2v profiles for i2v models
+            i2v_score = 0 if (is_i2v and "i2v" in name) else 1
+            # 2) Prefer latest date (e.g. "v2025-10-14")
+            date_match = re.search(r"v?(\d{4}[-/]\d{2}[-/]\d{2})", name)
+            date_str = date_match.group(1).replace("/", "-") if date_match else "0000-00-00"
+            # 3) Prefer lowest steps (e.g. "4 steps")
+            steps_match = re.search(r"(\d+)\s*steps?", name)
+            steps = int(steps_match.group(1)) if steps_match else 999
+            return (i2v_score, date_str, steps)  # sort: 0 < 1 for i2v, reverse for date, ascending for steps
+
+        # Sort: i2v_score ascending, date DESCENDING (negate via reverse string comparison), steps ascending
+        ranked = sorted(profiles, key=lambda p: (
+            _rank(p)[0],
+            "".join(chr(255 - ord(c)) for c in _rank(p)[1]),  # reverse date sort
+            _rank(p)[2],
+        ))
+        return ranked[0] if ranked else None
+
+    def _build_task(self, prompt, model_type, extra_params=None, task_id=None):
+        """Build a single render task dict for process_tasks_cli."""
+        try:
+            defaults = self.get_default_settings(model_type)
+        except Exception:
+            defaults = {}
+        # Start from model defaults only — do NOT inherit primary_settings
+        # from main UI (which may have wrong step count, resolution, etc.)
+        base = dict(defaults)
+        # Force-zero all ref-mode params.
+        base["video_prompt_type"] = ""
+        base["image_prompt_type"] = ""
+        base["audio_prompt_type"] = ""
+        base["image_start"] = None
+        base["image_end"] = None
+        base["image_refs"] = None
+        base["video_source"] = None
+        base["video_guide"] = None
+        base["image_guide"] = None
+        base["audio_guide"] = None
+        base["audio_guide2"] = None
+        base["audio_source"] = None
+        base["custom_guide"] = None
+        base["video_mask"] = None
+        base["image_mask"] = None
+        # Apply Smooth Brain speed-lora overrides for image models
+        sb_overrides = get_image_model_overrides(model_type)
+        if sb_overrides:
+            base.update(sb_overrides)
+        if extra_params:
+            base.update(extra_params)
+        base["prompt"] = prompt
+        base["model_type"] = model_type
+        base["base_model_type"] = model_type
+        base.setdefault("mode", "")
+        # Debug: log key params for validation troubleshooting
+        log.debug("  [_build_task] model=%s vpt=%r ipt=%r apt=%r refs=%r istart=%s",
+                  model_type, base.get('video_prompt_type'), base.get('image_prompt_type'),
+                  base.get('audio_prompt_type'), base.get('image_refs'),
+                  base.get('image_start') is not None)
+        return {"id": task_id or int(time.time() * 1000), "params": base, "plugin_data": {}}
+
+    def _find_newest_output(self, extensions=None, since_ts_ns=None, output_type="image"):
+        """Scan the wan2gp outputs directory for the newest matching file."""
+        cfg = self.server_config if hasattr(self, 'server_config') and self.server_config else {}
+        if output_type == "image":
+            out_dir = cfg.get("image_save_path", cfg.get("save_path", "outputs"))
+        else:
+            out_dir = cfg.get("save_path", "outputs")
+        if not os.path.isabs(out_dir):
+            # Resolve relative to wan2gp app directory
+            wgp_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            out_dir = os.path.join(wgp_dir, out_dir)
+        if not os.path.isdir(out_dir):
+            return None
+        if extensions is None:
+            extensions = [".png", ".jpg", ".jpeg", ".webp"] if output_type == "image" else [".mp4"]
+        candidates = []
+        for ext in extensions:
+            candidates.extend(glob.glob(os.path.join(out_dir, f"*{ext}")))
+        if not candidates:
+            return None
+        # Filter by recent timestamp (nanoseconds) if specified
+        if since_ts_ns:
+            candidates = [f for f in candidates if os.stat(f).st_mtime_ns >= since_ts_ns]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda f: os.stat(f).st_mtime_ns)
+
+    def _run_render_tasks(self, tasks):
+        """Run a list of render tasks in-process using process_tasks_cli.
+        Returns True on success. Uses the already-loaded model (no subprocess)."""
+        cli_state = self._build_cli_state()
+        try:
+            # Build the queue list from our tasks
+            queue = []
+            for task in tasks:
+                params = task.get("params", {})
+                queue.append({
+                    "id": task.get("id", int(time.time() * 1000)),
+                    "prompt": params.get("prompt", ""),
+                    "params": params,
+                    "plugin_data": task.get("plugin_data", {}),
+                })
+            return self.process_tasks_cli(queue, cli_state)
+        except Exception as e:
+            log.error("Render failed: %s", e, exc_info=True)
+            return False
+
+    def _queue_image_renders(self, wan2gp_state, sb_state, resolution, auto_mode):
+        """Generator: render shots one at a time and yield progress + images."""
+        sb_state = dict(sb_state)
+        shots = [dict(s) for s in sb_state.get("shots", [])]
+        sb_state["shots"] = shots
+        image_model = sb_state.get("image_model", "")
+        vibe = sb_state.get("vibe", "cinematic")
+        shot_count = sb_state.get("shot_count", 6)
+        is_auto = auto_mode == "Auto"
+        n_panels = len(self.sb_storyboard_panels)
+
+        def _yield_state(status_html: str, sb_state: dict, changed_shot: int = None, stop_btn_visible: bool = None, preserve_state: bool = False):
+            """Build yield tuple for the generator, updating relevant outputs.
+            preserve_state=True → emit gr.update() for state slot so user approvals aren't overwritten.
+            """
+            shots = sb_state.get("shots", [])
+            shot_count = sb_state.get("shot_count", 0)
+            n_panels = len(self.sb_storyboard_panels)
+
+            # Progress bar
+            approved = sum(1 for s in shots[:shot_count]
+                           if s.get("status") == STATUS_APPROVED)
+            progress = self._progress_bar_html(approved, shot_count)
+            all_have_images = shot_count > 0 and all(
+                shots[i].get("ref_image_path") for i in range(shot_count) if i < len(shots)
+            )
+            next_btn = gr.update(interactive=all_have_images)
+
+            # Badges: always update all shots so none get stuck on a stale status
+            badges = []
+            for i in range(n_panels):
+                if i < len(shots):
+                    status = shots[i].get("status", STATUS_PENDING)
+                    badges.append(gr.update(value=self._shot_badge_html(i, status)))
+                else:
+                    badges.append(gr.update())
+
+            # Buttons: always update all shots
+            buttons = []
+            for i in range(n_panels):
+                if i < len(shots):
+                    status = shots[i].get("status", STATUS_PENDING)
+                    show = status in (STATUS_READY, STATUS_APPROVED, STATUS_REJECTED)
+                    buttons.extend([gr.update(visible=show), gr.update(visible=show)])
+                else:
+                    buttons.extend([gr.update(), gr.update()])
+
+            # Images: only push a new value when the changed shot has one (avoid flicker)
+            img_updates = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    path = shots[i].get("ref_image_path") if i < len(shots) else None
+                    img_updates.append(gr.update(value=path) if path else gr.update())
+                else:
+                    img_updates.append(gr.update())
+
+            gallery = self._refresh_gallery(sb_state, "images")
+
+            # Stop render button visibility
+            stop_btn = gr.update(visible=stop_btn_visible) if stop_btn_visible is not None else gr.update()
+
+            # State: use gr.update() (no-op) on final yield to preserve user approvals
+            state_out = gr.update() if preserve_state else sb_state
+
+            return [
+                status_html,
+                state_out,
+                progress, next_btn, gr.update(),
+                *badges, *buttons, *img_updates,
+                gallery,
+                stop_btn,
+            ]
+
+        if not shots:
+            yield _yield_state("<span style='color:red'>No shots to render</span>", sb_state, stop_btn_visible=False)
+            return
+        if not image_model:
+            yield _yield_state("<span style='color:orange'>⚠️ No image model. Set one in Step 1.</span>", sb_state)
+            return
+
+        # Identify shots to render
+        res_str = RESO_MAP.get(vibe, {}).get(resolution, "832x480")
+        to_render = []
+        for i, s in enumerate(shots[:shot_count]):
+            status = s.get("status", STATUS_PENDING)
+            if status in (STATUS_PENDING, STATUS_REJECTED):
+                raw_prompt = s.get("image_prompt") or s.get("beat") or ""
+                if raw_prompt:
+                    to_render.append(i)
+
+        if not to_render:
+            yield _yield_state("<span style='color:orange'>No pending shots to generate.</span>", sb_state)
+            return
+
+        # Get character reference image
+        char_images = sb_state.get("character_images", [])
+        char_ref = next((c for c in char_images if c and os.path.exists(c)), None)
+
+        sb_state["resolution"] = resolution
+        rendered = 0
+        self._render_cancelled = False
+
+        # Yield initial progress — show stop button
+        yield _yield_state(
+            f"<span style='color:var(--primary-400)'>⏳ Rendering 0/{len(to_render)} shots...</span>",
+            sb_state, stop_btn_visible=True,
+        )
+
+        for task_idx, shot_i in enumerate(to_render):
+            # Check for cancellation
+            if self._render_cancelled:
+                yield _yield_state(
+                    f"<span style='color:orange'>🛑 Render stopped. {rendered}/{len(to_render)} shots completed.</span>",
+                    sb_state, stop_btn_visible=False,
+                )
+                return
+            s = shots[shot_i]
+            try:
+                raw_prompt = s.get("image_prompt") or s.get("beat") or ""
+                # Prepend character description from vision scan for consistency
+                char_desc = sb_state.get("character_vision_description", "")
+                if char_desc:
+                    raw_prompt = f"{char_desc}. {raw_prompt}"
+                prompt = refine_single_prompt(raw_prompt, image_model, purpose="image")
+                log.info("Shot %d image → %s", shot_i+1, prompt[:120])
+
+                extra = {
+                    "resolution": res_str,
+                    "image_mode": 1,
+                    "seed": s.get("seed", -1),
+                }
+                if char_ref:
+                    model_lower = image_model.lower()
+                    is_wan_family = any(model_lower.startswith(p) for p in
+                        ("wan", "i2v", "ti2v", "t2v", "ltx", "hunyuan", "hy_", "k5_"))
+                    if is_wan_family:
+                        extra["image_start"] = char_ref
+                        extra["image_prompt_type"] = "S"
+                    else:
+                        extra["image_refs"] = [char_ref]
+                        ref_overrides = get_image_ref_overrides(image_model)
+                        extra.update(ref_overrides)
+
+                task = self._build_task(prompt, image_model, extra)
+                s["status"] = STATUS_RENDERING
+
+                # Yield rendering status
+                yield _yield_state(
+                    f"<span style='color:var(--primary-400)'>"
+                    f"🎨 <b>Rendering shot {shot_i+1}</b> ({task_idx+1}/{len(to_render)})..."
+                    f"<br><small>Check terminal for live progress.</small></span>",
+                    sb_state, changed_shot=shot_i,
+                )
+
+                before_ts_ns = time.time_ns()
+                success = self._run_render_tasks([task])
+
+                if success:
+                    output_path = self._find_newest_output(since_ts_ns=before_ts_ns, output_type="image")
+                    if output_path:
+                        project_dir = sb_state.get("project_dir", "")
+                        if project_dir:
+                            output_path = copy_to_project(output_path, project_dir, "images")
+                        s["ref_image_path"] = output_path
+                        s["status"] = STATUS_APPROVED if is_auto else STATUS_READY
+                        rendered += 1
+                        log.info("  Shot %d → %s", shot_i+1, output_path)
+                    else:
+                        s["status"] = STATUS_PENDING
+                else:
+                    s["status"] = STATUS_PENDING
+
+            except Exception as e:
+                log.error("Shot %d failed: %s", shot_i+1, e, exc_info=True)
+                s["status"] = STATUS_PENDING
+
+            # Auto-save after each shot
+            save_project(sb_state)
+
+            # Yield completed shot — only update this shot's badge/buttons/image
+            yield _yield_state(
+                f"<span style='color:var(--primary-400)'>✅ {rendered}/{len(to_render)} shots done...</span>",
+                sb_state, changed_shot=shot_i,
+            )
+
+        # Final status (no shot changed — just update text)
+        if rendered > 0:
+            status = f"<span style='color:var(--primary-500)'>✅ {rendered}/{len(to_render)} shot image(s) generated!</span>"
+        else:
+            status = "<span style='color:red'>❌ No images generated. Check terminal for errors.</span>"
+        yield _yield_state(status, sb_state, stop_btn_visible=False, preserve_state=True)
+
+    def _export_videos(self, wan2gp_state, sb_state, shot_duration):
+        """Generator: render video shots one at a time with per-card progress."""
+        sb_state = dict(sb_state)
+        shots = [dict(s) for s in sb_state.get("shots", [])]
+        sb_state["shots"] = shots
+        video_model = sb_state.get("video_model", "")
+        vibe = sb_state.get("vibe", "cinematic")
+        shot_count = sb_state.get("shot_count", 6)
+        resolution = sb_state.get("resolution", "480p")
+        n_panels = len(self.sb_video_panels)
+
+        # Auto-select fastest speed profile for this video model
+        profile_params = {}
+        try:
+            profile = self._get_fastest_profile(video_model)
+            if profile:
+                profile_params = profile.get("params", {})
+                log.info("Auto-selected speed profile: %s", profile['name'])
+            else:
+                log.info("No speed profiles found for %s, using defaults", video_model)
+        except Exception as e:
+            log.error("Profile scan failed: %s", e, exc_info=True)
+
+        # Video status constants (reuse image ones)
+        V_PENDING = STATUS_PENDING
+        V_RENDERING = STATUS_RENDERING
+        V_READY = STATUS_READY
+        V_APPROVED = STATUS_APPROVED
+        V_REJECTED = STATUS_REJECTED
+
+        def _yield_state(status_html, sb_state, changed_shot=None, stop_btn_visible=None):
+            """Build output — only update specific shot's card."""
+            approved = sum(1 for s in shots[:shot_count]
+                           if s.get("video_status") == V_APPROVED)
+            progress = self._progress_bar_html(approved, shot_count)
+
+            badges = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    vs = shots[i].get("video_status", V_PENDING) if i < len(shots) else V_PENDING
+                    badges.append(gr.update(value=self._shot_badge_html(i, vs)))
+                else:
+                    badges.append(gr.update())
+
+            buttons = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    vs = shots[i].get("video_status", V_PENDING) if i < len(shots) else V_PENDING
+                    show = (vs == V_READY)
+                    buttons.extend([gr.update(visible=show), gr.update(visible=show)])
+                else:
+                    buttons.extend([gr.update(), gr.update()])
+
+            vid_updates = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    path = shots[i].get("video_path") if i < len(shots) else None
+                    vid_updates.append(gr.update(value=path) if path else gr.update())
+                else:
+                    vid_updates.append(gr.update())
+
+            prompt_updates = [gr.update()] * n_panels
+
+            # Stop button visibility
+            stop_top = gr.update(visible=stop_btn_visible) if stop_btn_visible is not None else gr.update()
+            stop_bot = gr.update(visible=stop_btn_visible) if stop_btn_visible is not None else gr.update()
+
+            return [
+                status_html,
+                sb_state, progress,
+                *badges, *buttons, *vid_updates, *prompt_updates,
+                stop_top, stop_bot,
+            ]
+
+        if not shots:
+            yield _yield_state("<span style='color:red'>No shots found.</span>", sb_state)
+            return
+        if not video_model:
+            yield _yield_state("<span style='color:red'>No video model selected.</span>", sb_state)
+            return
+
+        # Identify shots to render (pending or rejected)
+        to_render = []
+        errors = []
+        for i, s in enumerate(shots[:shot_count]):
+            vs = s.get("video_status", V_PENDING)
+            if vs in (V_PENDING, V_REJECTED):
+                raw_prompt = s.get("video_prompt") or s.get("beat") or ""
+                if raw_prompt:
+                    prompt = refine_single_prompt(raw_prompt, video_model, purpose="video")
+                    try:
+                        shot_obj = ShotState(
+                            beat=s.get("beat", ""),
+                            image_prompt=s.get("image_prompt", ""),
+                            video_prompt=prompt,
+                            ref_image_path=s.get("ref_image_path"),
+                            seed=s.get("seed", -1),
+                        )
+                        try:
+                            defaults = self.get_default_settings(video_model)
+                        except Exception:
+                            defaults = {}
+                        params = build_video_params(shot_obj, video_model, shot_duration, vibe, defaults)
+                        res_str = VIDEO_RESOLUTION.get(vibe, {}).get(resolution, "832x480")
+                        params["resolution"] = res_str
+                        # Apply speed profile params (accelerator lora, step count, etc.)
+                        if profile_params:
+                            params.update(profile_params)
+                        ref_path = s.get("ref_image_path")
+                        if ref_path and os.path.exists(ref_path):
+                            params["image_start"] = ref_path
+                        to_render.append((i, prompt, params))
+                    except Exception as e:
+                        errors.append(f"Shot {i+1}: {e}")
+
+        if not to_render:
+            err_msg = "; ".join(errors) if errors else "No pending shots"
+            yield _yield_state(f"<span style='color:orange'>{err_msg}</span>", sb_state)
+            return
+
+        rendered = 0
+        self._render_cancelled = False
+
+        # Yield initial
+        yield _yield_state(
+            f"<span style='color:var(--primary-400)'>⏳ Rendering 0/{len(to_render)} videos...</span>",
+            sb_state, stop_btn_visible=True,
+        )
+
+        for task_idx, (shot_i, prompt, params) in enumerate(to_render):
+            # Check for cancellation
+            if self._render_cancelled:
+                yield _yield_state(
+                    f"<span style='color:orange'>🛑 Render stopped. {rendered}/{len(to_render)} videos completed.</span>",
+                    sb_state, stop_btn_visible=False,
+                )
+                return
+            s = shots[shot_i]
+            s["video_status"] = V_RENDERING
+            # Store the refined prompt for display
+            s["video_prompt_used"] = prompt
+            log.info("Shot %d video → %s", shot_i+1, prompt[:120])
+
+            yield _yield_state(
+                f"<span style='color:var(--primary-400)'>"
+                f"🎬 <b>Rendering shot {shot_i+1}</b> ({task_idx+1}/{len(to_render)})..."
+                f"<br><small>Check terminal for live progress.</small></span>",
+                sb_state, changed_shot=shot_i,
+            )
+
+            task = self._build_task(prompt, video_model, params)
+            before_ts_ns = time.time_ns()
+            try:
+                success = self._run_render_tasks([task])
+            except Exception as e:
+                log.error("Video render failed: %s", e, exc_info=True)
+                success = False
+
+            if success:
+                output_path = self._find_newest_output(since_ts_ns=before_ts_ns, output_type="video")
+                if output_path:
+                    # Copy to project folder
+                    project_dir = sb_state.get("project_dir", "")
+                    if project_dir:
+                        output_path = copy_to_project(output_path, project_dir, "videos")
+                    s["video_path"] = output_path
+                    s["video_status"] = V_APPROVED  # Auto-approve for now
+                    rendered += 1
+                    log.info("  Shot %d → %s", shot_i+1, output_path)
+                else:
+                    s["video_status"] = V_PENDING
+            else:
+                s["video_status"] = V_PENDING
+
+            # Auto-save after each shot
+            save_project(sb_state)
+
+            yield _yield_state(
+                f"<span style='color:var(--primary-400)'>✅ {rendered}/{len(to_render)} videos done...</span>",
+                sb_state, changed_shot=shot_i,
+            )
+
+        if rendered > 0:
+            status = f"<span style='color:var(--primary-500)'>✅ {rendered}/{len(to_render)} video(s) rendered!</span>"
+        else:
+            status = "<span style='color:red'>❌ No videos generated. Check terminal for errors.</span>"
+        yield _yield_state(status, sb_state, stop_btn_visible=False)
+===
+from __future__ import annotations
+# NOTE: Canonical render mixin retained to resolve branch merge conflicts.
+import os
+import glob
+import time
+import traceback
+import logging
+import gradio as gr
+from typing import Any, Dict, List, Optional
+from .constants import (
+    RESO_MAP, VIDEO_RESOLUTION,
+    STATUS_PENDING, STATUS_RENDERING, STATUS_READY, STATUS_APPROVED, STATUS_REJECTED
+)
+from .state import (
+    save_project, copy_to_project, is_ltx_model, ShotState, build_video_params
+)
+from .ollama import refine_single_prompt
+from .model_scanner import (
+    get_image_model_overrides, scan_profiles, get_image_ref_overrides,
+    QUALITY_PRESETS,
+)
+
+log = logging.getLogger("smooth_brain")
+
+class RenderEngineMixin:
+    def _build_cli_state(self):
+        """Build the minimal state dict that process_tasks_cli expects."""
+        return {
+            "gen": {
+                "queue": [], "in_progress": False,
+                "file_list": [], "file_settings_list": [],
+                "audio_file_list": [], "audio_file_settings_list": [],
+                "selected": 0, "audio_selected": 0,
+                "prompt_no": 0, "prompts_max": 0,
+                "repeat_no": 0, "total_generation": 1,
+                "window_no": 0, "total_windows": 0,
+                "progress_status": "", "process_status": "process:main",
+            },
+            "loras": [],
+        }
+
+    def _get_fastest_profile(self, model_id: str) -> dict | None:
+        """Auto-select the fastest speed profile for a video model.
+        Matches TronikSlate's ranking: i2v preference → latest date → lowest steps.
+        Returns the profile dict {name, params} or None.
+        """
+        import re
+        profiles = scan_profiles(model_id)
+        if not profiles:
+            return None
+        is_i2v = "i2v" in model_id.lower() or "ti2v" in model_id.lower()
+
+        def _rank(p):
+            name = p["name"].lower()
+            # 1) Prefer i2v profiles for i2v models
+            i2v_score = 0 if (is_i2v and "i2v" in name) else 1
+            # 2) Prefer latest date (e.g. "v2025-10-14")
+            date_match = re.search(r"v?(\d{4}[-/]\d{2}[-/]\d{2})", name)
+            date_str = date_match.group(1).replace("/", "-") if date_match else "0000-00-00"
+            # 3) Prefer lowest steps (e.g. "4 steps")
+            steps_match = re.search(r"(\d+)\s*steps?", name)
+            steps = int(steps_match.group(1)) if steps_match else 999
+            return (i2v_score, date_str, steps)  # sort: 0 < 1 for i2v, reverse for date, ascending for steps
+
+        # Sort: i2v_score ascending, date DESCENDING (negate via reverse string comparison), steps ascending
+        ranked = sorted(profiles, key=lambda p: (
+            _rank(p)[0],
+            "".join(chr(255 - ord(c)) for c in _rank(p)[1]),  # reverse date sort
+            _rank(p)[2],
+        ))
+        return ranked[0] if ranked else None
+
+    def _build_task(self, prompt, model_type, extra_params=None, task_id=None):
+        """Build a single render task dict for process_tasks_cli."""
+        try:
+            defaults = self.get_default_settings(model_type)
+        except Exception:
+            defaults = {}
+        # Start from model defaults only — do NOT inherit primary_settings
+        # from main UI (which may have wrong step count, resolution, etc.)
+        base = dict(defaults)
+        # Force-zero all ref-mode params.
+        base["video_prompt_type"] = ""
+        base["image_prompt_type"] = ""
+        base["audio_prompt_type"] = ""
+        base["image_start"] = None
+        base["image_end"] = None
+        base["image_refs"] = None
+        base["video_source"] = None
+        base["video_guide"] = None
+        base["image_guide"] = None
+        base["audio_guide"] = None
+        base["audio_guide2"] = None
+        base["audio_source"] = None
+        base["custom_guide"] = None
+        base["video_mask"] = None
+        base["image_mask"] = None
+        # Apply Smooth Brain speed-lora overrides for image models
+        sb_overrides = get_image_model_overrides(model_type)
+        if sb_overrides:
+            base.update(sb_overrides)
+        if extra_params:
+            base.update(extra_params)
+        base["prompt"] = prompt
+        base["model_type"] = model_type
+        base["base_model_type"] = model_type
+        base.setdefault("mode", "")
+        # Debug: log key params for validation troubleshooting
+        log.debug("  [_build_task] model=%s vpt=%r ipt=%r apt=%r refs=%r istart=%s",
+                  model_type, base.get('video_prompt_type'), base.get('image_prompt_type'),
+                  base.get('audio_prompt_type'), base.get('image_refs'),
+                  base.get('image_start') is not None)
+        return {"id": task_id or int(time.time() * 1000), "params": base, "plugin_data": {}}
+
+    def _find_newest_output(self, extensions=None, since_ts_ns=None, output_type="image"):
+        """Scan the wan2gp outputs directory for the newest matching file."""
+        cfg = self.server_config if hasattr(self, 'server_config') and self.server_config else {}
+        if output_type == "image":
+            out_dir = cfg.get("image_save_path", cfg.get("save_path", "outputs"))
+        else:
+            out_dir = cfg.get("save_path", "outputs")
+        if not os.path.isabs(out_dir):
+            # Resolve relative to wan2gp app directory
+            wgp_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            out_dir = os.path.join(wgp_dir, out_dir)
+        if not os.path.isdir(out_dir):
+            return None
+        if extensions is None:
+            extensions = [".png", ".jpg", ".jpeg", ".webp"] if output_type == "image" else [".mp4"]
+        candidates = []
+        for ext in extensions:
+            candidates.extend(glob.glob(os.path.join(out_dir, f"*{ext}")))
+        if not candidates:
+            return None
+        # Filter by recent timestamp (nanoseconds) if specified
+        if since_ts_ns:
+            candidates = [f for f in candidates if os.stat(f).st_mtime_ns >= since_ts_ns]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda f: os.stat(f).st_mtime_ns)
+
+    def _run_render_tasks(self, tasks):
+        """Run a list of render tasks in-process using process_tasks_cli.
+        Returns True on success. Uses the already-loaded model (no subprocess)."""
+        cli_state = self._build_cli_state()
+        try:
+            # Build the queue list from our tasks
+            queue = []
+            for task in tasks:
+                params = task.get("params", {})
+                queue.append({
+                    "id": task.get("id", int(time.time() * 1000)),
+                    "prompt": params.get("prompt", ""),
+                    "params": params,
+                    "plugin_data": task.get("plugin_data", {}),
+                })
+            return self.process_tasks_cli(queue, cli_state)
+        except Exception as e:
+            log.error("Render failed: %s", e, exc_info=True)
+            return False
+
+    def _queue_image_renders(self, wan2gp_state, sb_state, resolution, auto_mode):
+        """Generator: render shots one at a time and yield progress + images."""
+        sb_state = dict(sb_state)
+        shots = [dict(s) for s in sb_state.get("shots", [])]
+        sb_state["shots"] = shots
+        image_model = sb_state.get("image_model", "")
+        vibe = sb_state.get("vibe", "cinematic")
+        shot_count = sb_state.get("shot_count", 6)
+        is_auto = auto_mode == "Auto"
+        n_panels = len(self.sb_storyboard_panels)
+
+        def _yield_state(status_html: str, sb_state: dict, changed_shot: int = None, stop_btn_visible: bool = None, preserve_state: bool = False):
+            """Build yield tuple for the generator, updating relevant outputs.
+            preserve_state=True → emit gr.update() for state slot so user approvals aren't overwritten.
+            """
+            shots = sb_state.get("shots", [])
+            shot_count = sb_state.get("shot_count", 0)
+            n_panels = len(self.sb_storyboard_panels)
+
+            # Progress bar
+            approved = sum(1 for s in shots[:shot_count]
+                           if s.get("status") == STATUS_APPROVED)
+            progress = self._progress_bar_html(approved, shot_count)
+            all_have_images = shot_count > 0 and all(
+                shots[i].get("ref_image_path") for i in range(shot_count) if i < len(shots)
+            )
+            next_btn = gr.update(interactive=all_have_images)
+
+            # Badges: always update all shots so none get stuck on a stale status
+            badges = []
+            for i in range(n_panels):
+                if i < len(shots):
+                    status = shots[i].get("status", STATUS_PENDING)
+                    badges.append(gr.update(value=self._shot_badge_html(i, status)))
+                else:
+                    badges.append(gr.update())
+
+            # Buttons: always update all shots
+            buttons = []
+            for i in range(n_panels):
+                if i < len(shots):
+                    status = shots[i].get("status", STATUS_PENDING)
+                    show = status in (STATUS_READY, STATUS_APPROVED, STATUS_REJECTED)
+                    buttons.extend([gr.update(visible=show), gr.update(visible=show)])
+                else:
+                    buttons.extend([gr.update(), gr.update()])
+
+            # Images: only push a new value when the changed shot has one (avoid flicker)
+            img_updates = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    path = shots[i].get("ref_image_path") if i < len(shots) else None
+                    img_updates.append(gr.update(value=path) if path else gr.update())
+                else:
+                    img_updates.append(gr.update())
+
+            gallery = self._refresh_gallery(sb_state, "images")
+
+            # Stop render button visibility
+            stop_btn = gr.update(visible=stop_btn_visible) if stop_btn_visible is not None else gr.update()
+
+            # State: use gr.update() (no-op) on final yield to preserve user approvals
+            state_out = gr.update() if preserve_state else sb_state
+
+            return [
+                status_html,
+                state_out,
+                progress, next_btn, gr.update(),
+                *badges, *buttons, *img_updates,
+                gallery,
+                stop_btn,
+            ]
+
+        if not shots:
+            yield _yield_state("<span style='color:red'>No shots to render</span>", sb_state, stop_btn_visible=False)
+            return
+        if not image_model:
+            yield _yield_state("<span style='color:orange'>⚠️ No image model. Set one in Step 1.</span>", sb_state)
+            return
+
+        # Identify shots to render
+        res_str = RESO_MAP.get(vibe, {}).get(resolution, "832x480")
+        to_render = []
+        for i, s in enumerate(shots[:shot_count]):
+            status = s.get("status", STATUS_PENDING)
+            if status in (STATUS_PENDING, STATUS_REJECTED):
+                raw_prompt = s.get("image_prompt") or s.get("beat") or ""
+                if raw_prompt:
+                    to_render.append(i)
+
+        if not to_render:
+            yield _yield_state("<span style='color:orange'>No pending shots to generate.</span>", sb_state)
+            return
+
+        # Get character reference image
+        char_images = sb_state.get("character_images", [])
+        char_ref = next((c for c in char_images if c and os.path.exists(c)), None)
+
+        sb_state["resolution"] = resolution
+        rendered = 0
+        self._render_cancelled = False
+
+        # Yield initial progress — show stop button
+        yield _yield_state(
+            f"<span style='color:var(--primary-400)'>⏳ Rendering 0/{len(to_render)} shots...</span>",
+            sb_state, stop_btn_visible=True,
+        )
+
+        for task_idx, shot_i in enumerate(to_render):
+            # Check for cancellation
+            if self._render_cancelled:
+                yield _yield_state(
+                    f"<span style='color:orange'>🛑 Render stopped. {rendered}/{len(to_render)} shots completed.</span>",
+                    sb_state, stop_btn_visible=False,
+                )
+                return
+            s = shots[shot_i]
+            try:
+                raw_prompt = s.get("image_prompt") or s.get("beat") or ""
+                # Prepend character description from vision scan for consistency
+                char_desc = sb_state.get("character_vision_description", "")
+                if char_desc:
+                    raw_prompt = f"{char_desc}. {raw_prompt}"
+                prompt = refine_single_prompt(raw_prompt, image_model, purpose="image")
+                log.info("Shot %d image → %s", shot_i+1, prompt[:120])
+
+                extra = {
+                    "resolution": res_str,
+                    "image_mode": 1,
+                    "seed": s.get("seed", -1),
+                }
+                if char_ref:
+                    model_lower = image_model.lower()
+                    is_wan_family = any(model_lower.startswith(p) for p in
+                        ("wan", "i2v", "ti2v", "t2v", "ltx", "hunyuan", "hy_", "k5_"))
+                    if is_wan_family:
+                        extra["image_start"] = char_ref
+                        extra["image_prompt_type"] = "S"
+                    else:
+                        extra["image_refs"] = [char_ref]
+                        ref_overrides = get_image_ref_overrides(image_model)
+                        extra.update(ref_overrides)
+
+                task = self._build_task(prompt, image_model, extra)
+                s["status"] = STATUS_RENDERING
+
+                # Yield rendering status
+                yield _yield_state(
+                    f"<span style='color:var(--primary-400)'>"
+                    f"🎨 <b>Rendering shot {shot_i+1}</b> ({task_idx+1}/{len(to_render)})..."
+                    f"<br><small>Check terminal for live progress.</small></span>",
+                    sb_state, changed_shot=shot_i,
+                )
+
+                before_ts_ns = time.time_ns()
+                success = self._run_render_tasks([task])
+
+                if success:
+                    output_path = self._find_newest_output(since_ts_ns=before_ts_ns, output_type="image")
+                    if output_path:
+                        project_dir = sb_state.get("project_dir", "")
+                        if project_dir:
+                            output_path = copy_to_project(output_path, project_dir, "images")
+                        s["ref_image_path"] = output_path
+                        s["status"] = STATUS_APPROVED if is_auto else STATUS_READY
+                        rendered += 1
+                        log.info("  Shot %d → %s", shot_i+1, output_path)
+                    else:
+                        s["status"] = STATUS_PENDING
+                else:
+                    s["status"] = STATUS_PENDING
+
+            except Exception as e:
+                log.error("Shot %d failed: %s", shot_i+1, e, exc_info=True)
+                s["status"] = STATUS_PENDING
+
+            # Auto-save after each shot
+            save_project(sb_state)
+
+            # Yield completed shot — only update this shot's badge/buttons/image
+            yield _yield_state(
+                f"<span style='color:var(--primary-400)'>✅ {rendered}/{len(to_render)} shots done...</span>",
+                sb_state, changed_shot=shot_i,
+            )
+
+        # Final status (no shot changed — just update text)
+        if rendered > 0:
+            status = f"<span style='color:var(--primary-500)'>✅ {rendered}/{len(to_render)} shot image(s) generated!</span>"
+        else:
+            status = "<span style='color:red'>❌ No images generated. Check terminal for errors.</span>"
+        yield _yield_state(status, sb_state, stop_btn_visible=False, preserve_state=True)
+
+    def _export_videos(self, wan2gp_state, sb_state, shot_duration):
+        """Generator: render video shots one at a time with per-card progress."""
+        sb_state = dict(sb_state)
+        shots = [dict(s) for s in sb_state.get("shots", [])]
+        sb_state["shots"] = shots
+        video_model = sb_state.get("video_model", "")
+        vibe = sb_state.get("vibe", "cinematic")
+        shot_count = sb_state.get("shot_count", 6)
+        resolution = sb_state.get("resolution", "480p")
+        n_panels = len(self.sb_video_panels)
+
+        # Quality preset: fast (Lightning LoRA), balanced (25 steps), high (40 steps)
+        quality_preset = sb_state.get("quality_preset", "fast")
+        preset_cfg = QUALITY_PRESETS.get(quality_preset, QUALITY_PRESETS["fast"])
+        profile_params = {}
+        if preset_cfg["use_profile"]:
+            # Fast: use Lightning LoRA accelerator profile
+            try:
+                profile = self._get_fastest_profile(video_model)
+                if profile:
+                    profile_params = profile.get("params", {})
+                    log.info("Quality=%s → speed profile: %s", quality_preset, profile['name'])
+                else:
+                    log.info("Quality=%s → no profiles found for %s, using defaults", quality_preset, video_model)
+            except Exception as e:
+                log.error("Profile scan failed: %s", e, exc_info=True)
+        else:
+            # Balanced / High: fixed steps, no accelerator LoRA
+            profile_params = {"num_inference_steps": preset_cfg["num_inference_steps"]}
+            log.info("Quality=%s → %d steps, no accelerator", quality_preset, preset_cfg["num_inference_steps"])
+
+        # Video status constants (reuse image ones)
+        V_PENDING = STATUS_PENDING
+        V_RENDERING = STATUS_RENDERING
+        V_READY = STATUS_READY
+        V_APPROVED = STATUS_APPROVED
+        V_REJECTED = STATUS_REJECTED
+
+        def _yield_state(status_html, sb_state, changed_shot=None, stop_btn_visible=None):
+            """Build output — only update specific shot's card."""
+            approved = sum(1 for s in shots[:shot_count]
+                           if s.get("video_status") == V_APPROVED)
+            progress = self._progress_bar_html(approved, shot_count)
+
+            badges = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    vs = shots[i].get("video_status", V_PENDING) if i < len(shots) else V_PENDING
+                    badges.append(gr.update(value=self._shot_badge_html(i, vs)))
+                else:
+                    badges.append(gr.update())
+
+            buttons = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    vs = shots[i].get("video_status", V_PENDING) if i < len(shots) else V_PENDING
+                    show = (vs == V_READY)
+                    buttons.extend([gr.update(visible=show), gr.update(visible=show)])
+                else:
+                    buttons.extend([gr.update(), gr.update()])
+
+            vid_updates = []
+            for i in range(n_panels):
+                if changed_shot is not None and i == changed_shot:
+                    path = shots[i].get("video_path") if i < len(shots) else None
+                    vid_updates.append(gr.update(value=path) if path else gr.update())
+                else:
+                    vid_updates.append(gr.update())
+
+            prompt_updates = [gr.update()] * n_panels
+
+            # Stop button visibility
+            stop_top = gr.update(visible=stop_btn_visible) if stop_btn_visible is not None else gr.update()
+            stop_bot = gr.update(visible=stop_btn_visible) if stop_btn_visible is not None else gr.update()
+
+            return [
+                status_html,
+                sb_state, progress,
+                *badges, *buttons, *vid_updates, *prompt_updates,
+                stop_top, stop_bot,
+            ]
+
+        if not shots:
+            yield _yield_state("<span style='color:red'>No shots found.</span>", sb_state)
+            return
+        if not video_model:
+            yield _yield_state("<span style='color:red'>No video model selected.</span>", sb_state)
+            return
+
+        # Identify shots to render (pending or rejected)
+        to_render = []
+        errors = []
+        for i, s in enumerate(shots[:shot_count]):
+            vs = s.get("video_status", V_PENDING)
+            if vs in (V_PENDING, V_REJECTED):
+                raw_prompt = s.get("video_prompt") or s.get("beat") or ""
+                if raw_prompt:
+                    prompt = refine_single_prompt(raw_prompt, video_model, purpose="video")
+                    try:
+                        shot_obj = ShotState(
+                            beat=s.get("beat", ""),
+                            image_prompt=s.get("image_prompt", ""),
+                            video_prompt=prompt,
+                            ref_image_path=s.get("ref_image_path"),
+                            seed=s.get("seed", -1),
+                        )
+                        try:
+                            defaults = self.get_default_settings(video_model)
+                        except Exception:
+                            defaults = {}
+                        params = build_video_params(shot_obj, video_model, shot_duration, vibe, defaults)
+                        res_str = VIDEO_RESOLUTION.get(vibe, {}).get(resolution, "832x480")
+                        params["resolution"] = res_str
+                        # Apply speed profile params (accelerator lora, step count, etc.)
+                        if profile_params:
+                            params.update(profile_params)
+                        ref_path = s.get("ref_image_path")
+                        if ref_path and os.path.exists(ref_path):
+                            params["image_start"] = ref_path
+                        to_render.append((i, prompt, params))
+                    except Exception as e:
+                        errors.append(f"Shot {i+1}: {e}")
+
+        if not to_render:
+            err_msg = "; ".join(errors) if errors else "No pending shots"
+            yield _yield_state(f"<span style='color:orange'>{err_msg}</span>", sb_state)
+            return
+
+        rendered = 0
+        self._render_cancelled = False
+
+        # Yield initial
+        yield _yield_state(
+            f"<span style='color:var(--primary-400)'>⏳ Rendering 0/{len(to_render)} videos...</span>",
+            sb_state, stop_btn_visible=True,
+        )
+
+        for task_idx, (shot_i, prompt, params) in enumerate(to_render):
+            # Check for cancellation
+            if self._render_cancelled:
+                yield _yield_state(
+                    f"<span style='color:orange'>🛑 Render stopped. {rendered}/{len(to_render)} videos completed.</span>",
+                    sb_state, stop_btn_visible=False,
+                )
+                return
+            s = shots[shot_i]
+            s["video_status"] = V_RENDERING
+            # Store the refined prompt for display
+            s["video_prompt_used"] = prompt
+            log.info("Shot %d video → %s", shot_i+1, prompt[:120])
+
+            yield _yield_state(
+                f"<span style='color:var(--primary-400)'>"
+                f"🎬 <b>Rendering shot {shot_i+1}</b> ({task_idx+1}/{len(to_render)})..."
+                f"<br><small>Check terminal for live progress.</small></span>",
+                sb_state, changed_shot=shot_i,
+            )
+
+            task = self._build_task(prompt, video_model, params)
+            before_ts_ns = time.time_ns()
+            try:
+                success = self._run_render_tasks([task])
+            except Exception as e:
+                log.error("Video render failed: %s", e, exc_info=True)
+                success = False
+
+            if success:
+                output_path = self._find_newest_output(since_ts_ns=before_ts_ns, output_type="video")
+                if output_path:
+                    # Copy to project folder
+                    project_dir = sb_state.get("project_dir", "")
+                    if project_dir:
+                        output_path = copy_to_project(output_path, project_dir, "videos")
+                    s["video_path"] = output_path
+                    s["video_status"] = V_APPROVED  # Auto-approve for now
+                    rendered += 1
+                    log.info("  Shot %d → %s", shot_i+1, output_path)
+                else:
+                    s["video_status"] = V_PENDING
+            else:
+                s["video_status"] = V_PENDING
+
+            # Auto-save after each shot
+            save_project(sb_state)
+
+            yield _yield_state(
+                f"<span style='color:var(--primary-400)'>✅ {rendered}/{len(to_render)} videos done...</span>",
+                sb_state, changed_shot=shot_i,
+            )
+
+        if rendered > 0:
+            status = f"<span style='color:var(--primary-500)'>✅ {rendered}/{len(to_render)} video(s) rendered!</span>"
+        else:
+            status = "<span style='color:red'>❌ No videos generated. Check terminal for errors.</span>"
+        yield _yield_state(status, sb_state, stop_btn_visible=False)
+```
+
+Replaced unconditional [_get_fastest_profile()](file:///F:/pinokio/api/TronikSlate/render_engine.py#42-72) call with preset-aware logic. Reads `sb_state["quality_preset"]` (defaults to "fast"). For Balanced/High, sets fixed step count and skips LoRA.
+
+---
+
+#### [state.py](file:///F:/pinokio/api/TronikSlate/state.py)
+```diff:state.py
+# Smooth Brain — Session State & Project Persistence
+# Holds wizard state + per-project folder management with JSON autosave.
+
+from __future__ import annotations
+import json
+import os
+import re
+import shutil
+import time
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Optional, Any, Tuple
+
+# Legacy single-file autosave (kept for backwards compat / migration)
+AUTOSAVE_PATH = os.path.join(os.path.dirname(__file__), ".smooth_brain_session.json")
+
+# Default base directory for project folders (relative to wan2gp root)
+_WGP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_PROJECTS_BASE = os.path.join(_WGP_ROOT, "outputs", "smooth_brain")
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+
+@dataclass
+class ShotState:
+    beat: str                              # Original story beat text
+    image_prompt: str = ""                 # AI-refined image prompt
+    video_prompt: str = ""                 # AI-refined video prompt
+    ref_image_path: Optional[str] = None   # Character reference image path
+    seed: int = -1                         # -1 = random
+    status: str = "pending"                # pending | rendering | ready | approved | rejected
+    video_status: str = "pending"          # same values, for video phase
+
+
+@dataclass
+class SmoothBrainSession:
+    # Step 1
+    concept: str = ""
+    shot_count: int = 6
+    genre_weights: Dict[str, int] = field(default_factory=lambda: {"action": 50})
+    vibe: str = "cinematic"
+    video_model: str = ""
+    image_model: str = ""
+    profile: str = ""
+
+    # Step 2
+    character_names: List[str] = field(default_factory=list)
+    character_images: List[Optional[str]] = field(default_factory=list)
+
+    # Step 3
+    shots: List[ShotState] = field(default_factory=list)
+
+    # Step 4
+    shot_duration: float = 5.0
+    current_step: int = 1
+    saved_at: float = field(default_factory=time.time)
+
+    # Project
+    project_dir: str = ""                  # Absolute path to project folder
+
+
+# ── Vibe → resolution helpers ────────────────────────────────────────────────
+
+VIBE_RESOLUTION: Dict[str, str] = {
+    "cinematic": "832x480",
+    "vertical":  "480x832",
+    "square":    "624x624",
+}
+
+def vibe_to_resolution(vibe: str) -> str:
+    return VIBE_RESOLUTION.get(vibe, "832x480")
+
+
+# ── Frame helpers ─────────────────────────────────────────────────────────────
+
+def snap_to_8n1(frames: int) -> int:
+    """Snap frame count to nearest 8n+1 (LTX-2 requirement)."""
+    if frames <= 17:
+        return 17
+    n = round((frames - 1) / 8)
+    return max(17, n * 8 + 1)
+
+
+def duration_to_frames(seconds: float, fps: int = 24, is_ltx: bool = False) -> int:
+    raw = max(1, round(seconds * fps))
+    return snap_to_8n1(raw) if is_ltx else raw
+
+
+def is_ltx_model(model_id: str) -> bool:
+    return model_id.lower().startswith("ltx")
+
+
+# ── Project directory management ──────────────────────────────────────────────
+
+def slugify_concept(concept: str, max_len: int = 40) -> str:
+    """Turn a concept string into a filesystem-safe slug."""
+    slug = concept.lower().strip()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)      # strip non-alnum
+    slug = re.sub(r"[\s_]+", "-", slug)             # spaces/underscores → hyphens
+    slug = re.sub(r"-+", "-", slug).strip("-")      # collapse hyphens
+    slug = slug[:max_len].rstrip("-")
+    return slug or "untitled"
+
+
+def create_project_dir(concept: str, base_dir: str = "") -> str:
+    """Create a project folder and return its absolute path.
+
+    Structure:
+        <base_dir>/<slug>/
+            project.json
+            characters/
+            images/
+            videos/
+    """
+    if not base_dir:
+        base_dir = DEFAULT_PROJECTS_BASE
+    slug = slugify_concept(concept)
+    project_dir = os.path.join(base_dir, slug)
+
+    # If folder already exists, add a numeric suffix
+    if os.path.exists(project_dir):
+        i = 2
+        while os.path.exists(f"{project_dir}-{i}"):
+            i += 1
+        project_dir = f"{project_dir}-{i}"
+
+    os.makedirs(os.path.join(project_dir, "characters"), exist_ok=True)
+    os.makedirs(os.path.join(project_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(project_dir, "videos"), exist_ok=True)
+    print(f"[smooth_brain] Created project dir: {project_dir}")
+    return project_dir
+
+
+def save_project(sb_state: dict, project_dir: str = "") -> None:
+    """Save sb_state dict to project.json inside the project folder."""
+    if not project_dir:
+        project_dir = sb_state.get("project_dir", "")
+    if not project_dir:
+        print("[smooth_brain] save_project: no project_dir, skipping")
+        return
+    try:
+        os.makedirs(project_dir, exist_ok=True)
+        data = dict(sb_state)
+        data["saved_at"] = time.time()
+        path = os.path.join(project_dir, "project.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, path)  # atomic on same filesystem
+    except Exception as e:
+        print(f"[smooth_brain] save_project failed: {e}")
+        # Clean up temp file if it exists
+        try:
+            tmp = os.path.join(project_dir, "project.json.tmp")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def load_project(project_dir: str) -> Optional[dict]:
+    """Load a project from its folder. Returns sb_state dict or None."""
+    path = os.path.join(project_dir, "project.json")
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["project_dir"] = project_dir
+        return data
+    except Exception as e:
+        print(f"[smooth_brain] load_project failed: {e}")
+        return None
+
+
+def list_recent_projects(base_dir: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
+    """Scan for all project folders, return sorted by updated_at desc.
+
+    Returns list of dicts: {name, path, concept, step, age_str, saved_at}
+    """
+    if not base_dir:
+        base_dir = DEFAULT_PROJECTS_BASE
+    if not os.path.isdir(base_dir):
+        return []
+
+    projects = []
+    for name in os.listdir(base_dir):
+        pdir = os.path.join(base_dir, name)
+        pjson = os.path.join(pdir, "project.json")
+        if os.path.isdir(pdir) and os.path.exists(pjson):
+            try:
+                with open(pjson, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                saved_at = data.get("saved_at", 0)
+                concept = data.get("concept", name)
+                step = data.get("current_step", 1)
+                age_secs = time.time() - saved_at
+                if age_secs < 3600:
+                    age_str = f"{int(age_secs/60)}m ago"
+                elif age_secs < 86400:
+                    age_str = f"{int(age_secs/3600)}h ago"
+                else:
+                    age_str = f"{int(age_secs/86400)}d ago"
+                projects.append({
+                    "name": name,
+                    "path": pdir,
+                    "concept": concept[:60],
+                    "step": step,
+                    "age_str": age_str,
+                    "saved_at": saved_at,
+                })
+            except Exception:
+                pass
+
+    projects.sort(key=lambda p: p["saved_at"], reverse=True)
+    return projects[:max_results]
+
+
+def copy_to_project(src_path: str, project_dir: str, subfolder: str) -> str:
+    """Copy a file into the project's subfolder. Returns the destination path."""
+    if not project_dir or not src_path or not os.path.exists(src_path):
+        return src_path or ""
+    dest_dir = os.path.join(project_dir, subfolder)
+    os.makedirs(dest_dir, exist_ok=True)
+    basename = os.path.basename(src_path)
+    dest = os.path.join(dest_dir, basename)
+    # Avoid overwriting — add timestamp prefix
+    if os.path.exists(dest):
+        ts = int(time.time())
+        name, ext = os.path.splitext(basename)
+        dest = os.path.join(dest_dir, f"{name}_{ts}{ext}")
+    try:
+        shutil.copy2(src_path, dest)
+        return dest
+    except Exception as e:
+        print(f"[smooth_brain] copy_to_project failed: {e}")
+        return src_path
+
+
+def scan_project_gallery(project_dir: str, subfolder: str, extensions: List[str] = None) -> List[str]:
+    """Return all files in a project subfolder, newest first."""
+    if not project_dir:
+        return []
+    folder = os.path.join(project_dir, subfolder)
+    if not os.path.isdir(folder):
+        return []
+    if extensions is None:
+        extensions = [".png", ".jpg", ".jpeg", ".webp", ".mp4"]
+    files = []
+    for f in os.listdir(folder):
+        if any(f.lower().endswith(ext) for ext in extensions):
+            files.append(os.path.join(folder, f))
+    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    return files
+
+
+# ── Legacy JSON autosave (kept for migration) ────────────────────────────────
+
+def save_session(session: SmoothBrainSession) -> None:
+    try:
+        data = asdict(session)
+        data["saved_at"] = time.time()
+        with open(AUTOSAVE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[smooth_brain] autosave failed: {e}")
+
+
+def load_session() -> Optional[SmoothBrainSession]:
+    try:
+        if not os.path.exists(AUTOSAVE_PATH):
+            return None
+        with open(AUTOSAVE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        session = SmoothBrainSession(**{
+            k: v for k, v in data.items()
+            if k in SmoothBrainSession.__dataclass_fields__
+        })
+        session.shots = [ShotState(**s) for s in data.get("shots", [])]
+        return session
+    except Exception as e:
+        print(f"[smooth_brain] session load failed: {e}")
+        return None
+
+
+def clear_session() -> None:
+    try:
+        if os.path.exists(AUTOSAVE_PATH):
+            os.remove(AUTOSAVE_PATH)
+    except Exception:
+        pass
+
+
+def session_age_minutes(session: SmoothBrainSession) -> int:
+    return max(0, int((time.time() - session.saved_at) / 60))
+
+
+# ── Render param builder ─────────────────────────────────────────────────────
+
+def build_video_params(
+    shot: ShotState,
+    model_id: str,
+    shot_duration: float,
+    vibe: str,
+    defaults: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the params dict to pass to set_model_settings for one shot."""
+    fps = 24
+    frames = duration_to_frames(shot_duration, fps, is_ltx=is_ltx_model(model_id))
+    resolution = vibe_to_resolution(vibe)
+
+    params = {
+        **defaults,
+        "model_type": model_id,
+        "base_model_type": model_id,
+        "prompt": shot.video_prompt or shot.beat,
+        "video_length": frames,
+        "resolution": resolution,
+        "seed": shot.seed if shot.seed != -1 else -1,
+    }
+    if shot.ref_image_path and os.path.exists(shot.ref_image_path):
+        params["image_start"] = shot.ref_image_path
+        params["image_prompt_type"] = "S"
+
+    return params
+===
+# Smooth Brain — Session State & Project Persistence
+# Holds wizard state + per-project folder management with JSON autosave.
+
+from __future__ import annotations
+import json
+import os
+import re
+import shutil
+import time
+from dataclasses import dataclass, field, asdict
+from typing import List, Dict, Optional, Any, Tuple
+
+# Legacy single-file autosave (kept for backwards compat / migration)
+AUTOSAVE_PATH = os.path.join(os.path.dirname(__file__), ".smooth_brain_session.json")
+
+# Default base directory for project folders (relative to wan2gp root)
+_WGP_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+DEFAULT_PROJECTS_BASE = os.path.join(_WGP_ROOT, "outputs", "smooth_brain")
+
+
+# ── Data classes ──────────────────────────────────────────────────────────────
+
+@dataclass
+class ShotState:
+    beat: str                              # Original story beat text
+    image_prompt: str = ""                 # AI-refined image prompt
+    video_prompt: str = ""                 # AI-refined video prompt
+    ref_image_path: Optional[str] = None   # Character reference image path
+    seed: int = -1                         # -1 = random
+    status: str = "pending"                # pending | rendering | ready | approved | rejected
+    video_status: str = "pending"          # same values, for video phase
+
+
+@dataclass
+class SmoothBrainSession:
+    # Step 1
+    concept: str = ""
+    shot_count: int = 6
+    genre_weights: Dict[str, int] = field(default_factory=lambda: {"action": 50})
+    vibe: str = "cinematic"
+    video_model: str = ""
+    image_model: str = ""
+    profile: str = ""
+
+    # Step 2
+    character_names: List[str] = field(default_factory=list)
+    character_images: List[Optional[str]] = field(default_factory=list)
+
+    # Step 3
+    shots: List[ShotState] = field(default_factory=list)
+
+    # Step 4
+    shot_duration: float = 5.0
+    quality_preset: str = "fast"        # fast | balanced | high
+    current_step: int = 1
+    saved_at: float = field(default_factory=time.time)
+
+    # Project
+    project_dir: str = ""                  # Absolute path to project folder
+
+
+# ── Vibe → resolution helpers ────────────────────────────────────────────────
+
+VIBE_RESOLUTION: Dict[str, str] = {
+    "cinematic": "832x480",
+    "vertical":  "480x832",
+    "square":    "624x624",
+}
+
+def vibe_to_resolution(vibe: str) -> str:
+    return VIBE_RESOLUTION.get(vibe, "832x480")
+
+
+# ── Frame helpers ─────────────────────────────────────────────────────────────
+
+def snap_to_8n1(frames: int) -> int:
+    """Snap frame count to nearest 8n+1 (LTX-2 requirement)."""
+    if frames <= 17:
+        return 17
+    n = round((frames - 1) / 8)
+    return max(17, n * 8 + 1)
+
+
+def duration_to_frames(seconds: float, fps: int = 24, is_ltx: bool = False) -> int:
+    raw = max(1, round(seconds * fps))
+    return snap_to_8n1(raw) if is_ltx else raw
+
+
+def is_ltx_model(model_id: str) -> bool:
+    return model_id.lower().startswith("ltx")
+
+
+# ── Project directory management ──────────────────────────────────────────────
+
+def slugify_concept(concept: str, max_len: int = 40) -> str:
+    """Turn a concept string into a filesystem-safe slug."""
+    slug = concept.lower().strip()
+    slug = re.sub(r"[^a-z0-9\s-]", "", slug)      # strip non-alnum
+    slug = re.sub(r"[\s_]+", "-", slug)             # spaces/underscores → hyphens
+    slug = re.sub(r"-+", "-", slug).strip("-")      # collapse hyphens
+    slug = slug[:max_len].rstrip("-")
+    return slug or "untitled"
+
+
+def create_project_dir(concept: str, base_dir: str = "") -> str:
+    """Create a project folder and return its absolute path.
+
+    Structure:
+        <base_dir>/<slug>/
+            project.json
+            characters/
+            images/
+            videos/
+    """
+    if not base_dir:
+        base_dir = DEFAULT_PROJECTS_BASE
+    slug = slugify_concept(concept)
+    project_dir = os.path.join(base_dir, slug)
+
+    # If folder already exists, add a numeric suffix
+    if os.path.exists(project_dir):
+        i = 2
+        while os.path.exists(f"{project_dir}-{i}"):
+            i += 1
+        project_dir = f"{project_dir}-{i}"
+
+    os.makedirs(os.path.join(project_dir, "characters"), exist_ok=True)
+    os.makedirs(os.path.join(project_dir, "images"), exist_ok=True)
+    os.makedirs(os.path.join(project_dir, "videos"), exist_ok=True)
+    print(f"[smooth_brain] Created project dir: {project_dir}")
+    return project_dir
+
+
+def save_project(sb_state: dict, project_dir: str = "") -> None:
+    """Save sb_state dict to project.json inside the project folder."""
+    if not project_dir:
+        project_dir = sb_state.get("project_dir", "")
+    if not project_dir:
+        print("[smooth_brain] save_project: no project_dir, skipping")
+        return
+    try:
+        os.makedirs(project_dir, exist_ok=True)
+        data = dict(sb_state)
+        data["saved_at"] = time.time()
+        path = os.path.join(project_dir, "project.json")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, path)  # atomic on same filesystem
+    except Exception as e:
+        print(f"[smooth_brain] save_project failed: {e}")
+        # Clean up temp file if it exists
+        try:
+            tmp = os.path.join(project_dir, "project.json.tmp")
+            if os.path.exists(tmp):
+                os.remove(tmp)
+        except OSError:
+            pass
+
+
+def load_project(project_dir: str) -> Optional[dict]:
+    """Load a project from its folder. Returns sb_state dict or None."""
+    path = os.path.join(project_dir, "project.json")
+    try:
+        if not os.path.exists(path):
+            return None
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        data["project_dir"] = project_dir
+        return data
+    except Exception as e:
+        print(f"[smooth_brain] load_project failed: {e}")
+        return None
+
+
+def list_recent_projects(base_dir: str = "", max_results: int = 10) -> List[Dict[str, Any]]:
+    """Scan for all project folders, return sorted by updated_at desc.
+
+    Returns list of dicts: {name, path, concept, step, age_str, saved_at}
+    """
+    if not base_dir:
+        base_dir = DEFAULT_PROJECTS_BASE
+    if not os.path.isdir(base_dir):
+        return []
+
+    projects = []
+    for name in os.listdir(base_dir):
+        pdir = os.path.join(base_dir, name)
+        pjson = os.path.join(pdir, "project.json")
+        if os.path.isdir(pdir) and os.path.exists(pjson):
+            try:
+                with open(pjson, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                saved_at = data.get("saved_at", 0)
+                concept = data.get("concept", name)
+                step = data.get("current_step", 1)
+                age_secs = time.time() - saved_at
+                if age_secs < 3600:
+                    age_str = f"{int(age_secs/60)}m ago"
+                elif age_secs < 86400:
+                    age_str = f"{int(age_secs/3600)}h ago"
+                else:
+                    age_str = f"{int(age_secs/86400)}d ago"
+                projects.append({
+                    "name": name,
+                    "path": pdir,
+                    "concept": concept[:60],
+                    "step": step,
+                    "age_str": age_str,
+                    "saved_at": saved_at,
+                })
+            except Exception:
+                pass
+
+    projects.sort(key=lambda p: p["saved_at"], reverse=True)
+    return projects[:max_results]
+
+
+def copy_to_project(src_path: str, project_dir: str, subfolder: str) -> str:
+    """Copy a file into the project's subfolder. Returns the destination path."""
+    if not project_dir or not src_path or not os.path.exists(src_path):
+        return src_path or ""
+    dest_dir = os.path.join(project_dir, subfolder)
+    os.makedirs(dest_dir, exist_ok=True)
+    basename = os.path.basename(src_path)
+    dest = os.path.join(dest_dir, basename)
+    # Avoid overwriting — add timestamp prefix
+    if os.path.exists(dest):
+        ts = int(time.time())
+        name, ext = os.path.splitext(basename)
+        dest = os.path.join(dest_dir, f"{name}_{ts}{ext}")
+    try:
+        shutil.copy2(src_path, dest)
+        return dest
+    except Exception as e:
+        print(f"[smooth_brain] copy_to_project failed: {e}")
+        return src_path
+
+
+def scan_project_gallery(project_dir: str, subfolder: str, extensions: List[str] = None) -> List[str]:
+    """Return all files in a project subfolder, newest first."""
+    if not project_dir:
+        return []
+    folder = os.path.join(project_dir, subfolder)
+    if not os.path.isdir(folder):
+        return []
+    if extensions is None:
+        extensions = [".png", ".jpg", ".jpeg", ".webp", ".mp4"]
+    files = []
+    for f in os.listdir(folder):
+        if any(f.lower().endswith(ext) for ext in extensions):
+            files.append(os.path.join(folder, f))
+    files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+    return files
+
+
+# ── Legacy JSON autosave (kept for migration) ────────────────────────────────
+
+def save_session(session: SmoothBrainSession) -> None:
+    try:
+        data = asdict(session)
+        data["saved_at"] = time.time()
+        with open(AUTOSAVE_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        print(f"[smooth_brain] autosave failed: {e}")
+
+
+def load_session() -> Optional[SmoothBrainSession]:
+    try:
+        if not os.path.exists(AUTOSAVE_PATH):
+            return None
+        with open(AUTOSAVE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        session = SmoothBrainSession(**{
+            k: v for k, v in data.items()
+            if k in SmoothBrainSession.__dataclass_fields__
+        })
+        session.shots = [ShotState(**s) for s in data.get("shots", [])]
+        return session
+    except Exception as e:
+        print(f"[smooth_brain] session load failed: {e}")
+        return None
+
+
+def clear_session() -> None:
+    try:
+        if os.path.exists(AUTOSAVE_PATH):
+            os.remove(AUTOSAVE_PATH)
+    except Exception:
+        pass
+
+
+def session_age_minutes(session: SmoothBrainSession) -> int:
+    return max(0, int((time.time() - session.saved_at) / 60))
+
+
+# ── Render param builder ─────────────────────────────────────────────────────
+
+def build_video_params(
+    shot: ShotState,
+    model_id: str,
+    shot_duration: float,
+    vibe: str,
+    defaults: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build the params dict to pass to set_model_settings for one shot."""
+    fps = 24
+    frames = duration_to_frames(shot_duration, fps, is_ltx=is_ltx_model(model_id))
+    resolution = vibe_to_resolution(vibe)
+
+    params = {
+        **defaults,
+        "model_type": model_id,
+        "base_model_type": model_id,
+        "prompt": shot.video_prompt or shot.beat,
+        "video_length": frames,
+        "resolution": resolution,
+        "seed": shot.seed if shot.seed != -1 else -1,
+    }
+    if shot.ref_image_path and os.path.exists(shot.ref_image_path):
+        params["image_start"] = shot.ref_image_path
+        params["image_prompt_type"] = "S"
+
+    return params
+```
+
+Added `quality_preset: str = "fast"` to [SmoothBrainSession](file:///F:/pinokio/api/TronikSlate/state.py#34-60) for project persistence.
+
+---
+
+### React Frontend
+
+#### [VideoExport.tsx](file:///F:/pinokio/api/TronikSlate/app/src/components/SmoothBrain/VideoExport.tsx)
+```diff:VideoExport.tsx
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useRenderProgressStore } from '../../stores/renderProgressStore';
+import { useUIStore } from '../../stores/uiStore';
+import type { SmoothBrainStoryData } from '../../stores/uiStore';
+import { useModelStore } from '../../stores/modelStore';
+import { AssetPool } from './AssetPool';
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Types                                                       */
+/* ─────────────────────────────────────────────────────────── */
+
+type VideoStatus = 'pending' | 'rendering' | 'ready' | 'approved' | 'rejected';
+
+interface VideoShot {
+    index: number;
+    prompt: string;
+    status: VideoStatus;
+    /** Proxy URL to the storyboard reference image */
+    refImagePath: string;
+    /** Proxy URL to the generated video */
+    videoPath: string | null;
+    seed: number;
+}
+
+interface Props {
+    storyData: SmoothBrainStoryData;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Resolution map: vibe × tier → WxH for video generation      */
+/* ─────────────────────────────────────────────────────────── */
+const VIDEO_RESOLUTION: Record<string, Record<string, string>> = {
+    cinematic: { '480p': '832x480', '540p': '960x544', '720p': '1280x720', '1080p': '1920x1080' },
+    vertical: { '480p': '480x832', '540p': '544x960', '720p': '720x1280', '1080p': '1080x1920' },
+    square: { '480p': '512x512', '540p': '768x768', '720p': '1024x1024', '1080p': '1080x1080' },
+};
+
+const GORILLA_GIF = '/gifs/gorillasmoothbrain.gif';
+
+/* ─────────────────────────────────────────────────────────── */
+/*  GPU-aware duration limits                                    */
+/* ─────────────────────────────────────────────────────────── */
+
+/** Build VRAM→maxDuration lookup for a model family */
+function getSmartDuration(vramMB: number, isLtx: boolean) {
+    if (isLtx) {
+        if (vramMB >= 20480) return { recommended: 20, hardMax: 20 };
+        if (vramMB >= 16384) return { recommended: 16, hardMax: 20 };
+        if (vramMB >= 12288) return { recommended: 12, hardMax: 20 };
+        if (vramMB >= 8192) return { recommended: 8, hardMax: 20 };
+        return { recommended: 5, hardMax: 20 };
+    }
+    // Wan / HunyuanVideo / others
+    if (vramMB >= 16384) return { recommended: 10, hardMax: 10 };
+    if (vramMB >= 12288) return { recommended: 7, hardMax: 10 };
+    if (vramMB >= 8192) return { recommended: 5, hardMax: 10 };
+    return { recommended: 5, hardMax: 10 };
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Component                                                    */
+/* ─────────────────────────────────────────────────────────── */
+export function VideoExport({ storyData }: Props) {
+    const setSmoothBrainPhase = useUIStore((s) => s.setSmoothBrainPhase);
+
+    /* ── Initialise video shots from approved storyboard images ── */
+    const [shots, setShots] = useState<VideoShot[]>(() =>
+        (storyData.approvedImages || []).map((img, i) => ({
+            index: i,
+            prompt: storyData.videoPrompts?.[img.index] || img.prompt,
+            status: 'pending' as VideoStatus,
+            refImagePath: img.imagePath,
+            videoPath: null,
+            seed: Math.floor(Math.random() * 999999),
+        }))
+    );
+
+    const [renderJobId, setRenderJobId] = useState<string | null>(null);
+    const [renderProgress, setRenderProgress] = useState('');
+    const [isRendering, setIsRendering] = useState(false);
+    const [autoMode, setAutoMode] = useState(false);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null);
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    const autoModeRef = useRef(false);
+    const eventSourceRef = useRef<EventSource | null>(null);
+
+    /* ── Duration slider state ── */
+    const [shotDuration, setShotDuration] = useState(storyData.shotDuration || 5);
+    const [advancedMode, setAdvancedMode] = useState(false);
+    const [gpuName, setGpuName] = useState('');
+    const [gpuVram, setGpuVram] = useState(0);
+    const warnAudioRef = useRef<HTMLAudioElement | null>(null);
+    const powerAudioRef = useRef<HTMLAudioElement | null>(null);
+    const hasPlayedAudioRef = useRef(false);
+
+    const isLtxModel = useMemo(
+        () => (storyData.videoModel || '').toLowerCase().startsWith('ltx'),
+        [storyData.videoModel]
+    );
+
+    const durationLimits = useMemo(
+        () => getSmartDuration(gpuVram, isLtxModel),
+        [gpuVram, isLtxModel]
+    );
+
+    const sliderMax = advancedMode ? durationLimits.hardMax : durationLimits.recommended;
+
+    // GPU detection (same endpoint as ResolutionPicker)
+    useEffect(() => {
+        fetch('/api/models/gpu')
+            .then((r) => r.json())
+            .then((data) => {
+                setGpuName(data.name || '');
+                setGpuVram(data.vramMB || 0);
+            })
+            .catch(() => { });
+    }, []);
+
+    // Clamp duration when switching modes
+    useEffect(() => {
+        if (shotDuration > sliderMax) setShotDuration(sliderMax);
+    }, [sliderMax]);
+
+    // Audio cue on Advanced toggle (plays only once per session)
+    const handleAdvancedToggle = useCallback(() => {
+        const nextAdvanced = !advancedMode;
+        setAdvancedMode(nextAdvanced);
+        if (nextAdvanced && !hasPlayedAudioRef.current) {
+            hasPlayedAudioRef.current = true;
+            // High-tier rig → "DO IT!!", low-tier → "I wouldn't do that!"
+            const isHighTier = gpuVram >= 16384;
+            const audioEl = isHighTier ? powerAudioRef.current : warnAudioRef.current;
+            if (audioEl) {
+                audioEl.currentTime = 0;
+                audioEl.play().catch(() => { });
+            }
+        }
+    }, [advancedMode, gpuVram]);
+
+    const allApproved = shots.every((s) => s.status === 'approved');
+    const pendingCount = shots.filter((s) => s.status === 'pending' || s.status === 'rejected').length;
+    const approvedCount = shots.filter((s) => s.status === 'approved').length;
+
+    const getEffectiveDefaults = useModelStore((s) => s.getEffectiveDefaults);
+
+    /* ── SSE cleanup ── */
+    useEffect(() => {
+        return () => { eventSourceRef.current?.close(); };
+    }, []);
+
+    useEffect(() => { autoModeRef.current = autoMode; }, [autoMode]);
+
+    /* ──────────────────────────────── */
+    /*  Generate videos for pending shots */
+    /* ──────────────────────────────── */
+    const handleGenerateVideos = useCallback(async () => {
+        const shotsToRender = shots.filter((s) => s.status === 'pending' || s.status === 'rejected');
+        if (shotsToRender.length === 0) return;
+
+        console.log('[VideoExport] Starting video generation for', shotsToRender.length, 'shots');
+        setErrorMessage(null);
+
+        // Mark rendering
+        setShots((prev) =>
+            prev.map((s) =>
+                s.status === 'pending' || s.status === 'rejected'
+                    ? { ...s, status: 'rendering' as VideoStatus }
+                    : s
+            )
+        );
+        setIsRendering(true);
+
+        try {
+            const videoModelDefaults = getEffectiveDefaults(storyData.videoModel);
+
+            // Calculate video frames from duration
+            // LTX 2 requires video_length = 8n+1 (17, 25, 33 ... 241 ...)
+            // Other models (Wan, HunyuanVideo) use raw frame count at ~24fps
+            const fps = 24;
+            const rawFrames = Math.max(1, Math.round(shotDuration * fps));
+            const videoLength = isLtxModel
+                ? Math.max(17, Math.round((rawFrames - 1) / 8) * 8 + 1)  // snap to nearest 8n+1
+                : rawFrames;
+
+            const renderShots = shotsToRender.map((shot) => ({
+                prompt: shot.prompt,
+                refImagePath: shot.refImagePath || null,
+                params: {
+                    ...videoModelDefaults,
+                    model_type: storyData.videoModel,
+                    base_model_type: storyData.videoModel,
+                    seed: shot.seed,
+                    // VIDEO mode (default)
+                    image_mode: 0,
+                    video_length: videoLength,
+                    resolution: VIDEO_RESOLUTION[storyData.vibe]?.[storyData.videoResolution || storyData.resolution] || '832x480',
+                },
+            }));
+
+            const res = await fetch('/api/render/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    shots: renderShots,
+                    defaultParams: videoModelDefaults,
+                    projectId: storyData.projectId || 'smoothbrain',
+                }),
+            });
+
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                const errMsg = data.error || `Server error (${res.status})`;
+                console.error('Render start failed:', errMsg);
+                setErrorMessage(`❌ ${errMsg}`);
+                setShots((prev) =>
+                    prev.map((s) =>
+                        s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                    )
+                );
+                setIsRendering(false);
+                return;
+            }
+
+            setRenderJobId(data.jobId);
+            useRenderProgressStore.getState().startTracking(data.jobId, shotsToRender.length, 'smoothbrain');
+
+            /* ── SSE listener ── */
+            const sse = new EventSource(`/api/render/status/${data.jobId}`);
+            eventSourceRef.current = sse;
+
+            sse.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+
+                    if (msg.type === 'task_start') {
+                        setRenderProgress(`🎬 Generating video ${msg.taskNo}/${shotsToRender.length}...`);
+                    }
+
+                    if (msg.type === 'task_done') {
+                        const taskIdx = (msg.taskNo || 1) - 1;
+                        const actualShot = shotsToRender[taskIdx];
+                        if (actualShot) {
+                            const proxyUrl = msg.outputPath
+                                ? `/api/render/file?path=${encodeURIComponent(msg.outputPath)}`
+                                : null;
+                            setShots((prev) =>
+                                prev.map((s) =>
+                                    s.index === actualShot.index
+                                        ? {
+                                            ...s,
+                                            status: autoModeRef.current ? 'approved' as VideoStatus : 'ready' as VideoStatus,
+                                            videoPath: proxyUrl,
+                                        }
+                                        : s
+                                )
+                            );
+                        }
+                    }
+
+                    if (msg.type === 'stdout') {
+                        setRenderProgress(msg.line || '');
+                    }
+
+                    if (msg.type === 'job_end') {
+                        sse.close();
+                        eventSourceRef.current = null;
+                        setIsRendering(false);
+                        setRenderProgress('');
+
+                        if (msg.status === 'completed') {
+                            setShots((prev) =>
+                                prev.map((s) =>
+                                    s.status === 'rendering'
+                                        ? { ...s, status: autoModeRef.current ? 'approved' as VideoStatus : 'ready' as VideoStatus }
+                                        : s
+                                )
+                            );
+                        } else {
+                            setShots((prev) =>
+                                prev.map((s) =>
+                                    s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                                )
+                            );
+                        }
+                    }
+
+                    if (msg.type === 'job_error') {
+                        sse.close();
+                        eventSourceRef.current = null;
+                        setIsRendering(false);
+                        setRenderProgress('');
+                        setShots((prev) =>
+                            prev.map((s) =>
+                                s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                            )
+                        );
+                    }
+                } catch { /* ignore bad JSON */ }
+            };
+
+            sse.onerror = () => {
+                sse.close();
+                eventSourceRef.current = null;
+                setIsRendering(false);
+            };
+        } catch (e) {
+            console.error('Render error:', e);
+            setIsRendering(false);
+            setShots((prev) =>
+                prev.map((s) =>
+                    s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                )
+            );
+        }
+    }, [shots, storyData, getEffectiveDefaults]);
+
+    /* ── Cancel ── */
+    const handleCancel = useCallback(async () => {
+        if (!renderJobId) return;
+        try { await fetch(`/api/render/cancel/${renderJobId}`, { method: 'POST' }); } catch { /* ignore */ }
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+        setIsRendering(false);
+        setRenderProgress('');
+        setRenderJobId(null);
+        setShots((prev) =>
+            prev.map((s) => s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s)
+        );
+    }, [renderJobId]);
+
+    /* ── Approve / Reject ── */
+    const handleApprove = useCallback((index: number) => {
+        setShots((prev) =>
+            prev.map((s) => s.index === index ? { ...s, status: 'approved' as VideoStatus } : s)
+        );
+    }, []);
+
+    const handleReject = useCallback((index: number) => {
+        setShots((prev) =>
+            prev.map((s) =>
+                s.index === index
+                    ? { ...s, status: 'rejected' as VideoStatus, seed: Math.floor(Math.random() * 999999), videoPath: null }
+                    : s
+            )
+        );
+    }, []);
+
+    /* ── Grid columns ── */
+    const gridCols = shots.length <= 3 ? 'grid-cols-3' : shots.length <= 6 ? 'grid-cols-3' : 'grid-cols-5';
+
+    /* ──────────────────────────────── */
+    /*  Render                            */
+    /* ──────────────────────────────── */
+    return (
+        <>
+            {/* ── Fullscreen video player overlay ── */}
+            {fullscreenVideo && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"
+                    onClick={() => setFullscreenVideo(null)}
+                >
+                    <button
+                        className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full text-white text-xl flex items-center justify-center transition-colors z-10"
+                        onClick={() => setFullscreenVideo(null)}
+                    >
+                        ✕
+                    </button>
+                    <video
+                        src={fullscreenVideo}
+                        className="max-w-[90vw] max-h-[85vh] rounded-xl shadow-2xl"
+                        autoPlay
+                        controls
+                        loop
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                </div>
+            )}
+
+            <div className="flex flex-col gap-4 p-4 max-w-4xl mx-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <img src="/smoothbrain.jpg" alt="" className="w-10 h-10 rounded" />
+                        <div>
+                            <h1 className="text-xl font-bold text-white">🏁 Final Round: Video Generation</h1>
+                            <p className="text-xs text-gray-500">
+                                Turn your storyboard into videos — approve or re-roll
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        className="px-3 py-1.5 text-xs bg-surface-300 hover:bg-surface-400 text-gray-300 rounded-md transition-colors"
+                        onClick={() => setSmoothBrainPhase('storyboard')}
+                    >
+                        ← Back to Storyboard
+                    </button>
+                </div>
+
+                <hr className="border-surface-300" />
+
+                {/* Manual / Automatic toggle */}
+                <div className="flex items-center justify-between bg-surface-200/50 px-3 py-2 rounded-lg border border-surface-400">
+                    <div>
+                        <span className="text-xs text-gray-400">
+                            {autoMode ? '🤖 Automatic — videos auto-approve' : '✋ Manual — you approve each video'}
+                        </span>
+                    </div>
+                    <button
+                        className="relative w-[120px] h-[28px] rounded-full bg-surface-300 border border-surface-400 flex items-center transition-all cursor-pointer"
+                        onClick={() => setAutoMode(!autoMode)}
+                        style={{
+                            boxShadow: autoMode ? '0 0 12px rgba(34, 197, 94, 0.3)' : 'none',
+                            borderColor: autoMode ? 'rgba(34, 197, 94, 0.4)' : undefined,
+                        }}
+                    >
+                        <span className={`absolute left-2 text-[10px] font-medium transition-colors ${!autoMode ? 'text-cyan-300' : 'text-gray-600'}`}>Manual</span>
+                        <span className={`absolute right-2 text-[10px] font-medium transition-colors ${autoMode ? 'text-green-300' : 'text-gray-600'}`}>Auto</span>
+                        <div
+                            className={`absolute top-[2px] w-[54px] h-[22px] rounded-full transition-all duration-200 ${autoMode
+                                ? 'left-[63px] bg-green-600'
+                                : 'left-[2px] bg-cyan-600'
+                                }`}
+                        />
+                    </button>
+                </div>
+
+                {/* ── Duration Slider with Simple/Advanced ── */}
+                <div className="bg-surface-200/50 px-4 py-3 rounded-lg border border-surface-400 space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">⏱️ Shot Duration</span>
+                            {gpuName && gpuVram > 0 && (
+                                <span className="text-[10px] text-gray-600">
+                                    ({gpuName} · {Math.round(gpuVram / 1024)}GB)
+                                </span>
+                            )}
+                        </div>
+                        <button
+                            className={`px-2.5 py-1 text-[10px] font-bold rounded-full border transition-all ${advancedMode
+                                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]'
+                                : 'bg-surface-300 border-surface-400 text-gray-500 hover:text-gray-300'
+                                }`}
+                            onClick={handleAdvancedToggle}
+                        >
+                            {advancedMode ? '🔓 Advanced' : '🔒 Simple'}
+                        </button>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                        <span className="text-xs text-gray-500 w-6 text-right">5s</span>
+                        <input
+                            type="range"
+                            min={5}
+                            max={sliderMax}
+                            value={shotDuration}
+                            onChange={(e) => setShotDuration(Number(e.target.value))}
+                            className="flex-1 h-2 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                            style={{
+                                background: `linear-gradient(to right, #a855f7 ${((shotDuration - 5) / Math.max(1, sliderMax - 5)) * 100}%, #374151 ${((shotDuration - 5) / Math.max(1, sliderMax - 5)) * 100}%)`,
+                            }}
+                        />
+                        <span className="text-xs text-gray-500 w-8">{sliderMax}s</span>
+                        <span className="px-2 py-0.5 bg-surface-300 rounded text-xs text-purple-300 tabular-nums whitespace-nowrap">
+                            {shotDuration}s per shot
+                        </span>
+                    </div>
+
+                    {/* Smart hint */}
+                    <div className="flex items-center justify-between">
+                        <p className="text-[10px] text-gray-600">
+                            {!advancedMode ? (
+                                <>🧠 Smooth Brain recommends ≤{durationLimits.recommended}s for your rig</>
+                            ) : shotDuration > durationLimits.recommended ? (
+                                <span className="text-amber-400">⚠️ Above recommended — may be slow or OOM on {gpuName || 'your GPU'}</span>
+                            ) : (
+                                <>🔓 Full range unlocked — you're still within safe limits</>
+                            )}
+                        </p>
+                        <span className="text-[10px] text-gray-600 tabular-nums">
+                            Total: ~{shots.length * shotDuration}s ({shots.length} × {shotDuration}s)
+                        </span>
+                    </div>
+                </div>
+
+                {/* Audio cue elements (play once per session) */}
+                <audio ref={warnAudioRef} src="/audio/smoothbrain-warn.wav" preload="auto" />
+                <audio ref={powerAudioRef} src="/audio/DO IT DO IT.wav" preload="auto" />
+
+                {/* Model + stats info */}
+                <div className="flex items-center gap-4 text-xs text-gray-500">
+                    <span>🎥 <strong className="text-white">{storyData.videoModel}</strong></span>
+                    <span>{shots.length} shots</span>
+                    <span>{shotDuration}s each</span>
+                    <span>{storyData.vibe} vibe</span>
+                </div>
+
+                {/* Progress bar */}
+                <div className="flex items-center gap-3">
+                    <div className="flex-1 h-2 bg-surface-300 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full transition-all duration-500"
+                            style={{ width: `${shots.length > 0 ? (approvedCount / shots.length) * 100 : 0}%` }}
+                        />
+                    </div>
+                    <span className="text-xs text-gray-400 whitespace-nowrap">
+                        {approvedCount}/{shots.length} approved
+                    </span>
+                </div>
+
+                {/* Error banner */}
+                {errorMessage && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-red-600/10 border border-red-500/30 rounded-lg">
+                        <span className="text-xs text-red-300 flex-1">{errorMessage}</span>
+                        <button className="text-xs text-red-400 hover:text-red-200 px-2" onClick={() => setErrorMessage(null)}>✕</button>
+                    </div>
+                )}
+
+                {/* ── Video grid ── */}
+                <div className={`grid ${gridCols} gap-3`}>
+                    {shots.map((shot) => (
+                        <div
+                            key={shot.index}
+                            className={`relative flex flex-col rounded-xl overflow-hidden border transition-all ${dragOverIndex === shot.index ? 'border-cyan-400 shadow-lg shadow-cyan-500/20 scale-[1.03]' :
+                                shot.status === 'approved' ? 'border-green-500/60 shadow-lg shadow-green-500/10' :
+                                    shot.status === 'rejected' ? 'border-red-500/60 shadow-lg shadow-red-500/10' :
+                                        shot.status === 'rendering' ? 'border-purple-500/40 shadow-lg shadow-purple-500/10' :
+                                            'border-surface-400'
+                                }`}
+                            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOverIndex(shot.index); }}
+                            onDragLeave={() => setDragOverIndex(null)}
+                            onDrop={(e) => {
+                                e.preventDefault();
+                                setDragOverIndex(null);
+                                try {
+                                    const json = e.dataTransfer.getData('application/json');
+                                    if (json) {
+                                        const file = JSON.parse(json);
+                                        setShots((prev) => prev.map((s) =>
+                                            s.index === shot.index
+                                                ? { ...s, videoPath: file.url, status: 'ready' as VideoStatus }
+                                                : s
+                                        ));
+                                        return;
+                                    }
+                                } catch { /* fallback */ }
+                                const url = e.dataTransfer.getData('text/plain');
+                                if (url) {
+                                    setShots((prev) => prev.map((s) =>
+                                        s.index === shot.index
+                                            ? { ...s, videoPath: url, status: 'ready' as VideoStatus }
+                                            : s
+                                    ));
+                                }
+                            }}
+                        >
+                            {/* Video / image preview area */}
+                            <div className="relative aspect-video bg-surface-200 flex items-center justify-center overflow-hidden">
+                                {/* Drop target indicator */}
+                                {dragOverIndex === shot.index && (
+                                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-cyan-500/20 border-2 border-dashed border-cyan-400 rounded-lg">
+                                        <span className="text-cyan-300 font-bold text-sm drop-shadow-lg">⇩ Drop video here</span>
+                                    </div>
+                                )}
+                                {shot.status === 'pending' && (
+                                    <div className="flex flex-col items-center gap-1 text-gray-600">
+                                        {/* Show storyboard frame as placeholder */}
+                                        {shot.refImagePath ? (
+                                            <>
+                                                <img src={shot.refImagePath} alt="" className="absolute inset-0 w-full h-full object-cover opacity-40" />
+                                                <span className="relative text-2xl">🎬</span>
+                                                <span className="relative text-[10px]">Ready to render</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span className="text-2xl">🎬</span>
+                                                <span className="text-[10px]">Waiting...</span>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+
+                                {shot.status === 'rendering' && (
+                                    <img src={GORILLA_GIF} alt="Generating..." className="w-full h-full object-cover" />
+                                )}
+
+                                {(shot.status === 'ready' || shot.status === 'approved' || shot.status === 'rejected') && shot.videoPath && (
+                                    <div className="relative w-full h-full group cursor-pointer" onClick={() => setFullscreenVideo(shot.videoPath)}>
+                                        <video
+                                            src={shot.videoPath}
+                                            className="w-full h-full object-cover"
+                                            muted
+                                            loop
+                                            autoPlay
+                                            playsInline
+                                        />
+                                        {/* Play overlay */}
+                                        <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors">
+                                            <div className="w-10 h-10 bg-white/20 group-hover:bg-white/40 rounded-full flex items-center justify-center backdrop-blur-sm transition-all group-hover:scale-110">
+                                                <span className="text-white text-lg ml-0.5">▶</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Status badge */}
+                                {shot.status === 'approved' && (
+                                    <div className="absolute top-1.5 right-1.5 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center text-xs shadow-lg">✅</div>
+                                )}
+                                {shot.status === 'rendering' && (
+                                    <div className="absolute top-1.5 right-1.5 px-2 py-0.5 bg-purple-600/80 rounded-full text-[10px] text-white font-medium animate-pulse">Rendering...</div>
+                                )}
+                                {shot.status === 'rejected' && (
+                                    <div className="absolute top-1.5 right-1.5 px-2 py-0.5 bg-red-600/80 rounded-full text-[10px] text-white font-medium">Re-queued</div>
+                                )}
+
+                                {/* Shot number */}
+                                <div className="absolute top-1.5 left-1.5 w-6 h-6 bg-black/60 rounded-full flex items-center justify-center text-[10px] text-white font-bold">
+                                    {shot.index + 1}
+                                </div>
+                            </div>
+
+                            {/* Prompt */}
+                            <div className="px-2 py-1.5 bg-surface-100">
+                                <p className="text-[10px] text-gray-400 line-clamp-2 leading-tight" title={shot.prompt}>
+                                    {shot.prompt}
+                                </p>
+                            </div>
+
+                            {/* Approve / Reject buttons — 'ready' status */}
+                            {shot.status === 'ready' && (
+                                <div className="flex border-t border-surface-400">
+                                    <button
+                                        className="flex-1 py-1.5 text-sm bg-surface-200 hover:bg-green-600/20 text-green-400 hover:text-green-300 transition-colors border-r border-surface-400"
+                                        onClick={() => handleApprove(shot.index)}
+                                        title="Approve this video"
+                                    >
+                                        👍
+                                    </button>
+                                    <button
+                                        className="flex-1 py-1.5 text-sm bg-surface-200 hover:bg-red-600/20 text-red-400 hover:text-red-300 transition-colors"
+                                        onClick={() => handleReject(shot.index)}
+                                        title="Reject — re-generate with new seed"
+                                    >
+                                        👎
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Approved lock */}
+                            {shot.status === 'approved' && (
+                                <div className="flex border-t border-green-500/30">
+                                    <button className="flex-1 py-1.5 text-[10px] bg-green-600/10 text-green-400 font-medium cursor-default" disabled>
+                                        ✅ Locked
+                                    </button>
+                                    <button
+                                        className="py-1.5 px-2 text-[10px] bg-surface-200 hover:bg-red-600/10 text-gray-500 hover:text-red-400 transition-colors border-l border-surface-400"
+                                        onClick={() => handleReject(shot.index)}
+                                        title="Unlock and re-generate"
+                                    >
+                                        🔓
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+
+                {/* Render progress */}
+                {isRendering && renderProgress && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-purple-600/10 border border-purple-500/30 rounded-lg">
+                        <span className="animate-spin text-sm">🎬</span>
+                        <span className="text-xs text-purple-300 truncate flex-1">{renderProgress}</span>
+                        <button
+                            className="text-xs text-red-400 hover:text-red-300 px-2 py-0.5 bg-red-600/20 rounded"
+                            onClick={handleCancel}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex gap-3">
+                    {!allApproved && (
+                        <button
+                            className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${isRendering
+                                ? 'bg-surface-400 text-gray-600 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-purple-600 to-indigo-500 hover:from-purple-500 hover:to-indigo-400 text-white shadow-lg shadow-purple-600/20 hover:scale-[1.02]'
+                                }`}
+                            onClick={handleGenerateVideos}
+                            disabled={isRendering}
+                        >
+                            {isRendering
+                                ? '🎬 Generating...'
+                                : pendingCount === shots.length
+                                    ? `🎬 Generate ${shots.length} Videos`
+                                    : `🔄 Re-generate ${pendingCount} Rejected Video${pendingCount !== 1 ? 's' : ''}`
+                            }
+                        </button>
+                    )}
+
+                    {allApproved && (
+                        <button
+                            className="flex-1 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 text-white shadow-lg shadow-green-600/30 hover:scale-[1.02] transition-all"
+                            onClick={() => {
+                                // TODO: final download / export bundle
+                                alert('🎉 All videos approved! Export coming soon.');
+                            }}
+                        >
+                            🎉 Export All Videos
+                        </button>
+                    )}
+                </div>
+
+                {/* Asset Pool — shows all previously generated videos for crash recovery */}
+                <AssetPool
+                    assetType="video"
+                    draggable
+                    label="🎬 Generated Videos (drag onto a shot or click to preview)"
+                    onSelect={(file) => setFullscreenVideo(file.url)}
+                />
+            </div>
+        </>
+    );
+}
+===
+import { useState, useCallback, useEffect, useRef, useMemo } from 'react';
+import { useRenderProgressStore } from '../../stores/renderProgressStore';
+import { useUIStore } from '../../stores/uiStore';
+import type { SmoothBrainStoryData } from '../../stores/uiStore';
+import { useModelStore } from '../../stores/modelStore';
+import { AssetPool } from './AssetPool';
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Types                                                       */
+/* ─────────────────────────────────────────────────────────── */
+
+type VideoStatus = 'pending' | 'rendering' | 'ready' | 'approved' | 'rejected';
+
+interface VideoShot {
+    index: number;
+    prompt: string;
+    status: VideoStatus;
+    /** Proxy URL to the storyboard reference image */
+    refImagePath: string;
+    /** Proxy URL to the generated video */
+    videoPath: string | null;
+    seed: number;
+}
+
+interface Props {
+    storyData: SmoothBrainStoryData;
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Resolution map: vibe × tier → WxH for video generation      */
+/* ─────────────────────────────────────────────────────────── */
+const VIDEO_RESOLUTION: Record<string, Record<string, string>> = {
+    cinematic: { '480p': '832x480', '540p': '960x544', '720p': '1280x720', '1080p': '1920x1080' },
+    vertical: { '480p': '480x832', '540p': '544x960', '720p': '720x1280', '1080p': '1080x1920' },
+    square: { '480p': '512x512', '540p': '768x768', '720p': '1024x1024', '1080p': '1080x1080' },
+};
+
+const GORILLA_GIF = '/gifs/gorillasmoothbrain.gif';
+
+/* ─────────────────────────────────────────────────────────── */
+/*  GPU-aware duration limits                                    */
+/* ─────────────────────────────────────────────────────────── */
+
+/** Build VRAM→maxDuration lookup for a model family */
+function getSmartDuration(vramMB: number, isLtx: boolean) {
+    if (isLtx) {
+        if (vramMB >= 20480) return { recommended: 20, hardMax: 20 };
+        if (vramMB >= 16384) return { recommended: 16, hardMax: 20 };
+        if (vramMB >= 12288) return { recommended: 12, hardMax: 20 };
+        if (vramMB >= 8192) return { recommended: 8, hardMax: 20 };
+        return { recommended: 5, hardMax: 20 };
+    }
+    // Wan / HunyuanVideo / others
+    if (vramMB >= 16384) return { recommended: 10, hardMax: 10 };
+    if (vramMB >= 12288) return { recommended: 7, hardMax: 10 };
+    if (vramMB >= 8192) return { recommended: 5, hardMax: 10 };
+    return { recommended: 5, hardMax: 10 };
+}
+
+/* ─────────────────────────────────────────────────────────── */
+/*  Component                                                    */
+/* ─────────────────────────────────────────────────────────── */
+export function VideoExport({ storyData }: Props) {
+    const setSmoothBrainPhase = useUIStore((s) => s.setSmoothBrainPhase);
+
+    /* ── Initialise video shots from approved storyboard images ── */
+    const [shots, setShots] = useState<VideoShot[]>(() =>
+        (storyData.approvedImages || []).map((img, i) => ({
+            index: i,
+            prompt: storyData.videoPrompts?.[img.index] || img.prompt,
+            status: 'pending' as VideoStatus,
+            refImagePath: img.imagePath,
+            videoPath: null,
+            seed: Math.floor(Math.random() * 999999),
+        }))
+    );
+
+    const [renderJobId, setRenderJobId] = useState<string | null>(null);
+    const [renderProgress, setRenderProgress] = useState('');
+    const [isRendering, setIsRendering] = useState(false);
+    const [autoMode, setAutoMode] = useState(false);
+    const [errorMessage, setErrorMessage] = useState<string | null>(null);
+    const [fullscreenVideo, setFullscreenVideo] = useState<string | null>(null);
+    const [dragOverIndex, setDragOverIndex] = useState<number | null>(null);
+    const [qualityPreset, setQualityPreset] = useState<'fast' | 'balanced' | 'high'>('fast');
+    const autoModeRef = useRef(false);
+    const eventSourceRef = useRef<EventSource | null>(null);
+
+    /* ── Duration slider state ── */
+    const [shotDuration, setShotDuration] = useState(storyData.shotDuration || 5);
+    const [advancedMode, setAdvancedMode] = useState(false);
+    const [gpuName, setGpuName] = useState('');
+    const [gpuVram, setGpuVram] = useState(0);
+    const warnAudioRef = useRef<HTMLAudioElement | null>(null);
+    const powerAudioRef = useRef<HTMLAudioElement | null>(null);
+    const hasPlayedAudioRef = useRef(false);
+
+    const isLtxModel = useMemo(
+        () => (storyData.videoModel || '').toLowerCase().startsWith('ltx'),
+        [storyData.videoModel]
+    );
+
+    const durationLimits = useMemo(
+        () => getSmartDuration(gpuVram, isLtxModel),
+        [gpuVram, isLtxModel]
+    );
+
+    const sliderMax = advancedMode ? durationLimits.hardMax : durationLimits.recommended;
+
+    // GPU detection (same endpoint as ResolutionPicker)
+    useEffect(() => {
+        fetch('/api/models/gpu')
+            .then((r) => r.json())
+            .then((data) => {
+                setGpuName(data.name || '');
+                setGpuVram(data.vramMB || 0);
+            })
+            .catch(() => { });
+    }, []);
+
+    // Clamp duration when switching modes
+    useEffect(() => {
+        if (shotDuration > sliderMax) setShotDuration(sliderMax);
+    }, [sliderMax]);
+
+    // Audio cue on Advanced toggle (plays only once per session)
+    const handleAdvancedToggle = useCallback(() => {
+        const nextAdvanced = !advancedMode;
+        setAdvancedMode(nextAdvanced);
+        if (nextAdvanced && !hasPlayedAudioRef.current) {
+            hasPlayedAudioRef.current = true;
+            // High-tier rig → "DO IT!!", low-tier → "I wouldn't do that!"
+            const isHighTier = gpuVram >= 16384;
+            const audioEl = isHighTier ? powerAudioRef.current : warnAudioRef.current;
+            if (audioEl) {
+                audioEl.currentTime = 0;
+                audioEl.play().catch(() => { });
+            }
+        }
+    }, [advancedMode, gpuVram]);
+
+    const allApproved = shots.every((s) => s.status === 'approved');
+    const pendingCount = shots.filter((s) => s.status === 'pending' || s.status === 'rejected').length;
+    const approvedCount = shots.filter((s) => s.status === 'approved').length;
+
+    const getEffectiveDefaults = useModelStore((s) => s.getEffectiveDefaults);
+
+    /* ── SSE cleanup ── */
+    useEffect(() => {
+        return () => { eventSourceRef.current?.close(); };
+    }, []);
+
+    useEffect(() => { autoModeRef.current = autoMode; }, [autoMode]);
+
+    /* ──────────────────────────────── */
+    /*  Generate videos for pending shots */
+    /* ──────────────────────────────── */
+    const handleGenerateVideos = useCallback(async () => {
+        const shotsToRender = shots.filter((s) => s.status === 'pending' || s.status === 'rejected');
+        if (shotsToRender.length === 0) return;
+
+        console.log('[VideoExport] Starting video generation for', shotsToRender.length, 'shots');
+        setErrorMessage(null);
+
+        // Mark rendering
+        setShots((prev) =>
+            prev.map((s) =>
+                s.status === 'pending' || s.status === 'rejected'
+                    ? { ...s, status: 'rendering' as VideoStatus }
+                    : s
+            )
+        );
+        setIsRendering(true);
+
+        try {
+            const videoModelDefaults = getEffectiveDefaults(storyData.videoModel);
+
+            // Calculate video frames from duration
+            // LTX 2 requires video_length = 8n+1 (17, 25, 33 ... 241 ...)
+            // Other models (Wan, HunyuanVideo) use raw frame count at ~24fps
+            const fps = 24;
+            const rawFrames = Math.max(1, Math.round(shotDuration * fps));
+            const videoLength = isLtxModel
+                ? Math.max(17, Math.round((rawFrames - 1) / 8) * 8 + 1)  // snap to nearest 8n+1
+                : rawFrames;
+
+            const renderShots = shotsToRender.map((shot) => ({
+                prompt: shot.prompt,
+                refImagePath: shot.refImagePath || null,
+                params: {
+                    ...videoModelDefaults,
+                    model_type: storyData.videoModel,
+                    base_model_type: storyData.videoModel,
+                    seed: shot.seed,
+                    // VIDEO mode (default)
+                    image_mode: 0,
+                    video_length: videoLength,
+                    resolution: VIDEO_RESOLUTION[storyData.vibe]?.[storyData.videoResolution || storyData.resolution] || '832x480',
+                    // Quality preset: override steps for Balanced/High; Fast uses profile defaults
+                    ...(qualityPreset !== 'fast' && {
+                        num_inference_steps: qualityPreset === 'balanced' ? 25 : 40,
+                        // Clear accelerator LoRA settings
+                        activated_loras: [],
+                        loras_multipliers: '',
+                        lset_name: '',
+                    }),
+                },
+            }));
+
+            const res = await fetch('/api/render/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    shots: renderShots,
+                    defaultParams: videoModelDefaults,
+                    projectId: storyData.projectId || 'smoothbrain',
+                }),
+            });
+
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                const errMsg = data.error || `Server error (${res.status})`;
+                console.error('Render start failed:', errMsg);
+                setErrorMessage(`❌ ${errMsg}`);
+                setShots((prev) =>
+                    prev.map((s) =>
+                        s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                    )
+                );
+                setIsRendering(false);
+                return;
+            }
+
+            setRenderJobId(data.jobId);
+            useRenderProgressStore.getState().startTracking(data.jobId, shotsToRender.length, 'smoothbrain');
+
+            /* ── SSE listener ── */
+            const sse = new EventSource(`/api/render/status/${data.jobId}`);
+            eventSourceRef.current = sse;
+
+            sse.onmessage = (event) => {
+                try {
+                    const msg = JSON.parse(event.data);
+
+                    if (msg.type === 'task_start') {
+                        setRenderProgress(`🎬 Generating video ${msg.taskNo}/${shotsToRender.length}...`);
+                    }
+
+                    if (msg.type === 'task_done') {
+                        const taskIdx = (msg.taskNo || 1) - 1;
+                        const actualShot = shotsToRender[taskIdx];
+                        if (actualShot) {
+                            const proxyUrl = msg.outputPath
+                                ? `/api/render/file?path=${encodeURIComponent(msg.outputPath)}`
+                                : null;
+                            setShots((prev) =>
+                                prev.map((s) =>
+                                    s.index === actualShot.index
+                                        ? {
+                                            ...s,
+                                            status: autoModeRef.current ? 'approved' as VideoStatus : 'ready' as VideoStatus,
+                                            videoPath: proxyUrl,
+                                        }
+                                        : s
+                                )
+                            );
+                        }
+                    }
+
+                    if (msg.type === 'stdout') {
+                        setRenderProgress(msg.line || '');
+                    }
+
+                    if (msg.type === 'job_end') {
+                        sse.close();
+                        eventSourceRef.current = null;
+                        setIsRendering(false);
+                        setRenderProgress('');
+
+                        if (msg.status === 'completed') {
+                            setShots((prev) =>
+                                prev.map((s) =>
+                                    s.status === 'rendering'
+                                        ? { ...s, status: autoModeRef.current ? 'approved' as VideoStatus : 'ready' as VideoStatus }
+                                        : s
+                                )
+                            );
+                        } else {
+                            setShots((prev) =>
+                                prev.map((s) =>
+                                    s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                                )
+                            );
+                        }
+                    }
+
+                    if (msg.type === 'job_error') {
+                        sse.close();
+                        eventSourceRef.current = null;
+                        setIsRendering(false);
+                        setRenderProgress('');
+                        setShots((prev) =>
+                            prev.map((s) =>
+                                s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                            )
+                        );
+                    }
+                } catch { /* ignore bad JSON */ }
+            };
+
+            sse.onerror = () => {
+                sse.close();
+                eventSourceRef.current = null;
+                setIsRendering(false);
+            };
+        } catch (e) {
+            console.error('Render error:', e);
+            setIsRendering(false);
+            setShots((prev) =>
+                prev.map((s) =>
+                    s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s
+                )
+            );
+        }
+    }, [shots, storyData, getEffectiveDefaults, qualityPreset, shotDuration, isLtxModel]);
+
+    /* ── Cancel ── */
+    const handleCancel = useCallback(async () => {
+        if (!renderJobId) return;
+        try { await fetch(`/api/render/cancel/${renderJobId}`, { method: 'POST' }); } catch { /* ignore */ }
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+        setIsRendering(false);
+        setRenderProgress('');
+        setRenderJobId(null);
+        setShots((prev) =>
+            prev.map((s) => s.status === 'rendering' ? { ...s, status: 'pending' as VideoStatus } : s)
+        );
+    }, [renderJobId]);
+
+    /* ── Approve / Reject ── */
+    const handleApprove = useCallback((index: number) => {
+        setShots((prev) =>
+            prev.map((s) => s.index === index ? { ...s, status: 'approved' as VideoStatus } : s)
+        );
+    }, []);
+
+    const handleReject = useCallback((index: number) => {
+        setShots((prev) =>
+            prev.map((s) =>
+                s.index === index
+                    ? { ...s, status: 'rejected' as VideoStatus, seed: Math.floor(Math.random() * 999999), videoPath: null }
+                    : s
+            )
+        );
+    }, []);
+
+    /* ── Grid columns ── */
+    const gridCols = shots.length <= 3 ? 'grid-cols-3' : shots.length <= 6 ? 'grid-cols-3' : 'grid-cols-5';
+
+    /* ──────────────────────────────── */
+    /*  Render                            */
+    /* ──────────────────────────────── */
+    return (
+        <>
+            {/* ── Fullscreen video player overlay ── */}
+            {fullscreenVideo && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 backdrop-blur-sm"
+                    onClick={() => setFullscreenVideo(null)}
+                >
+                    <button
+                        className="absolute top-4 right-4 w-10 h-10 bg-white/10 hover:bg-white/20 rounded-full text-white text-xl flex items-center justify-center transition-colors z-10"
+                        onClick={() => setFullscreenVideo(null)}
+                    >
+                        ✕
+                    </button>
+                    <video
+                        src={fullscreenVideo}
+                        className="max-w-[90vw] max-h-[85vh] rounded-xl shadow-2xl"
+                        autoPlay
+                        controls
+                        loop
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                </div>
+            )}
+
+            <div className="flex flex-col gap-4 p-4 max-w-4xl mx-auto">
+                {/* Header */}
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <img src="/smoothbrain.jpg" alt="" className="w-10 h-10 rounded" />
+                        <div>
+                            <h1 className="text-xl font-bold text-white">🏁 Final Round: Video Generation</h1>
+                            <p className="text-xs text-gray-500">
+                                Turn your storyboard into videos — approve or re-roll
+                            </p>
+                        </div>
+                    </div>
+                    <button
+                        className="px-3 py-1.5 text-xs bg-surface-300 hover:bg-surface-400 text-gray-300 rounded-md transition-colors"
+                        onClick={() => setSmoothBrainPhase('storyboard')}
+                    >
+                        ← Back to Storyboard
+                    </button>
+                </div>
+
+                <hr className="border-surface-300" />
+
+                {/* Manual / Automatic toggle */}
+                <div className="flex items-center justify-between bg-surface-200/50 px-3 py-2 rounded-lg border border-surface-400">
+                    <div>
+                        <span className="text-xs text-gray-400">
+                            {autoMode ? '🤖 Automatic — videos auto-approve' : '✋ Manual — you approve each video'}
+                        </span>
+                    </div>
+                    <button
+                        className="relative w-[120px] h-[28px] rounded-full bg-surface-300 border border-surface-400 flex items-center transition-all cursor-pointer"
+                        onClick={() => setAutoMode(!autoMode)}
+                        style={{
+                            boxShadow: autoMode ? '0 0 12px rgba(34, 197, 94, 0.3)' : 'none',
+                            borderColor: autoMode ? 'rgba(34, 197, 94, 0.4)' : undefined,
+                        }}
+                    >
+                        <span className={`absolute left-2 text-[10px] font-medium transition-colors ${!autoMode ? 'text-cyan-300' : 'text-gray-600'}`}>Manual</span>
+                        <span className={`absolute right-2 text-[10px] font-medium transition-colors ${autoMode ? 'text-green-300' : 'text-gray-600'}`}>Auto</span>
+                        <div
+                            className={`absolute top-[2px] w-[54px] h-[22px] rounded-full transition-all duration-200 ${autoMode
+                                ? 'left-[63px] bg-green-600'
+                                : 'left-[2px] bg-cyan-600'
+                                }`}
+                        />
+                    </button>
+                </div>
+
+                {/* ── Quality Preset ── */}
+                <div className="bg-surface-200/50 px-4 py-3 rounded-lg border border-surface-400">
+                    <span className="text-xs font-bold text-gray-400 uppercase tracking-wider mb-2 block">
+                        ⚡ Quality Preset
+                    </span>
+                    <div className="flex gap-2">
+                        {(['fast', 'balanced', 'high'] as const).map((preset) => (
+                            <button
+                                key={preset}
+                                className={`flex-1 py-2 rounded-lg text-xs font-bold transition-all border ${
+                                    qualityPreset === preset
+                                        ? preset === 'fast'   ? 'bg-cyan-600/20 border-cyan-500/50 text-cyan-300 shadow-[0_0_10px_rgba(6,182,212,0.15)]'
+                                        : preset === 'balanced' ? 'bg-purple-600/20 border-purple-500/50 text-purple-300 shadow-[0_0_10px_rgba(168,85,247,0.15)]'
+                                        : 'bg-amber-600/20 border-amber-500/50 text-amber-300 shadow-[0_0_10px_rgba(245,158,11,0.15)]'
+                                        : 'bg-surface-300 border-surface-400 text-gray-500 hover:text-gray-300'
+                                }`}
+                                onClick={() => setQualityPreset(preset)}
+                                disabled={isRendering}
+                            >
+                                {preset === 'fast' ? '⚡ Fast' : preset === 'balanced' ? '⚖️ Balanced' : '💎 High'}
+                                <span className="block text-[9px] font-normal mt-0.5 opacity-70">
+                                    {preset === 'fast' ? 'Lightning LoRA' : preset === 'balanced' ? '25 steps' : '40 steps'}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* ── Duration Slider with Simple/Advanced ── */}
+                <div className="bg-surface-200/50 px-4 py-3 rounded-lg border border-surface-400 space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-gray-400 uppercase tracking-wider">⏱️ Shot Duration</span>
+                            {gpuName && gpuVram > 0 && (
+                                <span className="text-[10px] text-gray-600">
+                                    ({gpuName} · {Math.round(gpuVram / 1024)}GB)
+                                </span>
+                            )}
+                        </div>
+                        <button
+                            className={`px-2.5 py-1 text-[10px] font-bold rounded-full border transition-all ${advancedMode
+                                ? 'bg-amber-500/20 border-amber-500/50 text-amber-300 shadow-[0_0_8px_rgba(245,158,11,0.2)]'
+                                : 'bg-surface-300 border-surface-400 text-gray-500 hover:text-gray-300'
+                                }`}
+                            onClick={handleAdvancedToggle}
+                        >
+                            {advancedMode ? '🔓 Advanced' : '🔒 Simple'}
+                        </button>
+                    </div>
+
+                    <div className="flex items-center gap-3">
+                        <span className="text-xs text-gray-500 w-6 text-right">5s</span>
+                        <input
+                            type="range"
+                            min={5}
+                            max={sliderMax}
+                            value={shotDuration}
+                            onChange={(e) => setShotDuration(Number(e.target.value))}
+                            className="flex-1 h-2 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                            style={{
+                                background: `linear-gradient(to right, #a855f7 ${((shotDuration - 5) / Math.max(1, sliderMax - 5)) * 100}%, #374151 ${((shotDuration - 5) / Math.max(1, sliderMax - 5)) * 100}%)`,
+                            }}
+                        />
+                        <span className="text-xs text-gray-500 w-8">{sliderMax}s</span>
+                        <span className="px-2 py-0.5 bg-surface-300 rounded text-xs text-purple-300 tabular-nums whitespace-nowrap">
+                            {shotDuration}s per shot
+                        </span>
+                    </div>
+
+                    {/* Smart hint */}
+                    <div className="flex items-center justify-between">
+                        <p className="text-[10px] text-gray-600">
+                            {!advancedMode ? (
+                                <>🧠 Smooth Brain recommends ≤{durationLimits.recommended}s for your rig</>
+                            ) : shotDuration > durationLimits.recommended ? (
+                                <span className="text-amber-400">⚠️ Above recommended — may be slow or OOM on {gpuName || 'your GPU'}</span>
+                            ) : (
+                                <>🔓 Full range unlocked — you're still within safe limits</>
+                            )}
+                        </p>
+                        <span className="text-[10px] text-gray-600 tabular-nums">
+                            Total: ~{shots.length * shotDuration}s ({shots.length} × {shotDuration}s)
+                        </span>
+                    </div>
+                </div>
+
+                {/* Audio cue elements (play once per session) */}
+                <audio ref={warnAudioRef} src="/audio/smoothbrain-warn.wav" preload="auto" />
+                <audio ref={powerAudioRef} src="/audio/DO IT DO IT.wav" preload="auto" />
+
+                {/* Model + stats info */}
+                <div className="flex items-center gap-4 text-xs text-gray-500">
+                    <span>🎥 <strong className="text-white">{storyData.videoModel}</strong></span>
+                    <span>{shots.length} shots</span>
+                    <span>{shotDuration}s each</span>
+                    <span>⚡ {qualityPreset}</span>
+                    <span>{storyData.vibe} vibe</span>
+                </div>
+
+                {/* Progress bar */}
+                <div className="flex items-center gap-3">
+                    <div className="flex-1 h-2 bg-surface-300 rounded-full overflow-hidden">
+                        <div
+                            className="h-full bg-gradient-to-r from-green-500 to-emerald-400 rounded-full transition-all duration-500"
+                            style={{ width: `${shots.length > 0 ? (approvedCount / shots.length) * 100 : 0}%` }}
+                        />
+                    </div>
+                    <span className="text-xs text-gray-400 whitespace-nowrap">
+                        {approvedCount}/{shots.length} approved
+                    </span>
+                </div>
+
+                {/* Error banner */}
+                {errorMessage && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-red-600/10 border border-red-500/30 rounded-lg">
+                        <span className="text-xs text-red-300 flex-1">{errorMessage}</span>
+                        <button className="text-xs text-red-400 hover:text-red-200 px-2" onClick={() => setErrorMessage(null)}>✕</button>
+                    </div>
+                )}
+
+                {/* ── Video grid ── */}
+                <div className={`grid ${gridCols} gap-3`}>
+                    {shots.map((shot) => (
+                        <div
+                            key={shot.index}
+                            className={`relative flex flex-col rounded-xl overflow-hidden border transition-all ${dragOverIndex === shot.index ? 'border-cyan-400 shadow-lg shadow-cyan-500/20 scale-[1.03]' :
+                                shot.status === 'approved' ? 'border-green-500/60 shadow-lg shadow-green-500/10' :
+                                    shot.status === 'rejected' ? 'border-red-500/60 shadow-lg shadow-red-500/10' :
+                                        shot.status === 'rendering' ? 'border-purple-500/40 shadow-lg shadow-purple-500/10' :
+                                            'border-surface-400'
+                                }`}
+                            onDragOver={(e) => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDragOverIndex(shot.index); }}
+                            onDragLeave={() => setDragOverIndex(null)}
+                            onDrop={(e) => {
+                                e.preventDefault();
+                                setDragOverIndex(null);
+                                try {
+                                    const json = e.dataTransfer.getData('application/json');
+                                    if (json) {
+                                        const file = JSON.parse(json);
+                                        setShots((prev) => prev.map((s) =>
+                                            s.index === shot.index
+                                                ? { ...s, videoPath: file.url, status: 'ready' as VideoStatus }
+                                                : s
+                                        ));
+                                        return;
+                                    }
+                                } catch { /* fallback */ }
+                                const url = e.dataTransfer.getData('text/plain');
+                                if (url) {
+                                    setShots((prev) => prev.map((s) =>
+                                        s.index === shot.index
+                                            ? { ...s, videoPath: url, status: 'ready' as VideoStatus }
+                                            : s
+                                    ));
+                                }
+                            }}
+                        >
+                            {/* Video / image preview area */}
+                            <div className="relative aspect-video bg-surface-200 flex items-center justify-center overflow-hidden">
+                                {/* Drop target indicator */}
+                                {dragOverIndex === shot.index && (
+                                    <div className="absolute inset-0 z-10 flex items-center justify-center bg-cyan-500/20 border-2 border-dashed border-cyan-400 rounded-lg">
+                                        <span className="text-cyan-300 font-bold text-sm drop-shadow-lg">⇩ Drop video here</span>
+                                    </div>
+                                )}
+                                {shot.status === 'pending' && (
+                                    <div className="flex flex-col items-center gap-1 text-gray-600">
+                                        {/* Show storyboard frame as placeholder */}
+                                        {shot.refImagePath ? (
+                                            <>
+                                                <img src={shot.refImagePath} alt="" className="absolute inset-0 w-full h-full object-cover opacity-40" />
+                                                <span className="relative text-2xl">🎬</span>
+                                                <span className="relative text-[10px]">Ready to render</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span className="text-2xl">🎬</span>
+                                                <span className="text-[10px]">Waiting...</span>
+                                            </>
+                                        )}
+                                    </div>
+                                )}
+
+                                {shot.status === 'rendering' && (
+                                    <img src={GORILLA_GIF} alt="Generating..." className="w-full h-full object-cover" />
+                                )}
+
+                                {(shot.status === 'ready' || shot.status === 'approved' || shot.status === 'rejected') && shot.videoPath && (
+                                    <div className="relative w-full h-full group cursor-pointer" onClick={() => setFullscreenVideo(shot.videoPath)}>
+                                        <video
+                                            src={shot.videoPath}
+                                            className="w-full h-full object-cover"
+                                            muted
+                                            loop
+                                            autoPlay
+                                            playsInline
+                                        />
+                                        {/* Play overlay */}
+                                        <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors">
+                                            <div className="w-10 h-10 bg-white/20 group-hover:bg-white/40 rounded-full flex items-center justify-center backdrop-blur-sm transition-all group-hover:scale-110">
+                                                <span className="text-white text-lg ml-0.5">▶</span>
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {/* Status badge */}
+                                {shot.status === 'approved' && (
+                                    <div className="absolute top-1.5 right-1.5 w-6 h-6 bg-green-500 rounded-full flex items-center justify-center text-xs shadow-lg">✅</div>
+                                )}
+                                {shot.status === 'rendering' && (
+                                    <div className="absolute top-1.5 right-1.5 px-2 py-0.5 bg-purple-600/80 rounded-full text-[10px] text-white font-medium animate-pulse">Rendering...</div>
+                                )}
+                                {shot.status === 'rejected' && (
+                                    <div className="absolute top-1.5 right-1.5 px-2 py-0.5 bg-red-600/80 rounded-full text-[10px] text-white font-medium">Re-queued</div>
+                                )}
+
+                                {/* Shot number */}
+                                <div className="absolute top-1.5 left-1.5 w-6 h-6 bg-black/60 rounded-full flex items-center justify-center text-[10px] text-white font-bold">
+                                    {shot.index + 1}
+                                </div>
+                            </div>
+
+                            {/* Prompt */}
+                            <div className="px-2 py-1.5 bg-surface-100">
+                                <p className="text-[10px] text-gray-400 line-clamp-2 leading-tight" title={shot.prompt}>
+                                    {shot.prompt}
+                                </p>
+                            </div>
+
+                            {/* Approve / Reject buttons — 'ready' status */}
+                            {shot.status === 'ready' && (
+                                <div className="flex border-t border-surface-400">
+                                    <button
+                                        className="flex-1 py-1.5 text-sm bg-surface-200 hover:bg-green-600/20 text-green-400 hover:text-green-300 transition-colors border-r border-surface-400"
+                                        onClick={() => handleApprove(shot.index)}
+                                        title="Approve this video"
+                                    >
+                                        👍
+                                    </button>
+                                    <button
+                                        className="flex-1 py-1.5 text-sm bg-surface-200 hover:bg-red-600/20 text-red-400 hover:text-red-300 transition-colors"
+                                        onClick={() => handleReject(shot.index)}
+                                        title="Reject — re-generate with new seed"
+                                    >
+                                        👎
+                                    </button>
+                                </div>
+                            )}
+
+                            {/* Approved lock */}
+                            {shot.status === 'approved' && (
+                                <div className="flex border-t border-green-500/30">
+                                    <button className="flex-1 py-1.5 text-[10px] bg-green-600/10 text-green-400 font-medium cursor-default" disabled>
+                                        ✅ Locked
+                                    </button>
+                                    <button
+                                        className="py-1.5 px-2 text-[10px] bg-surface-200 hover:bg-red-600/10 text-gray-500 hover:text-red-400 transition-colors border-l border-surface-400"
+                                        onClick={() => handleReject(shot.index)}
+                                        title="Unlock and re-generate"
+                                    >
+                                        🔓
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    ))}
+                </div>
+
+                {/* Render progress */}
+                {isRendering && renderProgress && (
+                    <div className="flex items-center gap-2 px-3 py-2 bg-purple-600/10 border border-purple-500/30 rounded-lg">
+                        <span className="animate-spin text-sm">🎬</span>
+                        <span className="text-xs text-purple-300 truncate flex-1">{renderProgress}</span>
+                        <button
+                            className="text-xs text-red-400 hover:text-red-300 px-2 py-0.5 bg-red-600/20 rounded"
+                            onClick={handleCancel}
+                        >
+                            Cancel
+                        </button>
+                    </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex gap-3">
+                    {!allApproved && (
+                        <button
+                            className={`flex-1 py-2.5 rounded-xl text-sm font-bold transition-all ${isRendering
+                                ? 'bg-surface-400 text-gray-600 cursor-not-allowed'
+                                : 'bg-gradient-to-r from-purple-600 to-indigo-500 hover:from-purple-500 hover:to-indigo-400 text-white shadow-lg shadow-purple-600/20 hover:scale-[1.02]'
+                                }`}
+                            onClick={handleGenerateVideos}
+                            disabled={isRendering}
+                        >
+                            {isRendering
+                                ? '🎬 Generating...'
+                                : pendingCount === shots.length
+                                    ? `🎬 Generate ${shots.length} Videos`
+                                    : `🔄 Re-generate ${pendingCount} Rejected Video${pendingCount !== 1 ? 's' : ''}`
+                            }
+                        </button>
+                    )}
+
+                    {allApproved && (
+                        <button
+                            className="flex-1 py-2.5 rounded-xl text-sm font-bold bg-gradient-to-r from-green-600 to-emerald-500 hover:from-green-500 hover:to-emerald-400 text-white shadow-lg shadow-green-600/30 hover:scale-[1.02] transition-all"
+                            onClick={() => {
+                                // TODO: final download / export bundle
+                                alert('🎉 All videos approved! Export coming soon.');
+                            }}
+                        >
+                            🎉 Export All Videos
+                        </button>
+                    )}
+                </div>
+
+                {/* Asset Pool — shows all previously generated videos for crash recovery */}
+                <AssetPool
+                    assetType="video"
+                    draggable
+                    label="🎬 Generated Videos (drag onto a shot or click to preview)"
+                    onSelect={(file) => setFullscreenVideo(file.url)}
+                />
+            </div>
+        </>
+    );
+}
+```
+
+- New `qualityPreset` state variable
+- 3-button toggle UI (cyan/purple/amber color-coded) between Auto/Manual toggle and Duration slider
+- When Balanced or High is selected, `num_inference_steps` is overridden (25 or 40) and LoRA settings are cleared in the render params
+- Preset name shown in the info bar
 
 ## Verification
-- `/api/models` endpoint returns correct family counts: LTX-2 (10), Wan 2.1 (49), Wan 2.2 (20)
-- LTX 2.3 Dev 22B and Distilled 22B now appear under LTX-2 family
+
+| Check | Result |
+|-------|--------|
+| `tsc --noEmit` | ✅ Clean |
+| Python `py_compile` (3 files) | ✅ Clean |
+| Manual UI test | ⏳ Pending user |
