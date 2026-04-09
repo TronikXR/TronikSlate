@@ -1,4 +1,4 @@
-# 🧠 Tronik Slate (Smooth Brain)
+# 🧠 TronikSlate
 
 > ⚠️ **Alpha Release** — This project is in active development. Core features work, but you may encounter bugs and breaking changes. **Users are highly encouraged to leave notes in the Issues section** for any bugs or issues they find.
 > 
