@@ -1,7 +1,8 @@
 # 🧠 Tronik Slate (Smooth Brain)
 
-> ⚠️ **Alpha Release** — This plugin is in active development. Core features work but expect bugs and breaking changes. Feedback and bug reports welcome!
-
+> ⚠️ **Alpha Release** — This project is in active development. Core features work, but you may encounter bugs and breaking changes. **Users are highly encouraged to leave notes in the Issues section** for any bugs or issues they find.
+> 
+> 💡 *Note: I have a day job and work on this in my free time, so I will update it as time permits. Any contributions (Pull Requests, bug reports, feature ideas) are very much appreciated!*
 AI-powered short film generation pipeline for [Wan2GP](https://github.com/deepbeepmeep/Wan2GP).
 
 ---
